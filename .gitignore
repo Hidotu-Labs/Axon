@@ -1,0 +1,14 @@
+# Root binary
+/axon
+
+# Test binaries
+/tests/test_version
+/tests/test_pkginfo
+/tests/test_search
+/tests/test_sync
+
+# Object files
+*.o
+src/*.o
+src/**/*.o
+tests/*.o
