@@ -14,6 +14,7 @@ int cmd_get(int argc, char **argv, const axon_config_t *cfg) {
     bool keep_cache = false;
 
     bool overwrite = false;
+    bool noconfirm = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -21,6 +22,7 @@ int cmd_get(int argc, char **argv, const axon_config_t *cfg) {
                 printf("%susage:%s  %saxon get%s [%soptions%s] %s<package...>%s\n\n",
                        ANSI_BOLD, ANSI_RESET, ANSI_BOLD_CYAN, ANSI_RESET, ANSI_YELLOW, ANSI_RESET, ANSI_BOLD_WHITE, ANSI_RESET);
                 printf("%soptions:%s\n", ANSI_BOLD_BLUE, ANSI_RESET);
+                printf("    %s-y, --noconfirm%s     do not prompt for confirmation\n", ANSI_BOLD_CYAN, ANSI_RESET);
                 printf("    %s--overwrite%s         overwrite conflicting non-critical files\n", ANSI_BOLD_CYAN, ANSI_RESET);
                 printf("    %s--keep-cache%s        keep downloaded package archive in cache\n", ANSI_BOLD_CYAN, ANSI_RESET);
                 printf("    %s--cache-dir <path>%s  specify package cache directory\n", ANSI_BOLD_CYAN, ANSI_RESET);
@@ -30,6 +32,7 @@ int cmd_get(int argc, char **argv, const axon_config_t *cfg) {
             } else {
                 printf("usage:  axon get [options] <package...>\n\n");
                 printf("options:\n");
+                printf("    -y, --noconfirm    do not prompt for confirmation\n");
                 printf("    --overwrite        overwrite conflicting non-critical files\n");
                 printf("    --keep-cache       keep downloaded package archive in cache\n");
                 printf("    --cache-dir <path> specify package cache directory\n");
@@ -38,6 +41,8 @@ int cmd_get(int argc, char **argv, const axon_config_t *cfg) {
                 printf("    -h, --help         display this help message\n");
             }
             return 0;
+        } else if (strcmp(argv[i], "-y") == 0 || strcmp(argv[i], "--noconfirm") == 0) {
+            noconfirm = true;
         } else if (strcmp(argv[i], "--overwrite") == 0) {
             overwrite = true;
         } else if (strcmp(argv[i], "--keep-cache") == 0) {
@@ -157,6 +162,66 @@ int cmd_get(int argc, char **argv, const axon_config_t *cfg) {
                    p->name ? p->name : "unknown",
                    p->version ? p->version : "",
                    p->repo ? p->repo : "remote");
+        }
+        printf("\n");
+    }
+
+    /* Calculate and display download & installation sizes */
+    size_t total_dl_size = 0;
+    size_t total_inst_size = 0;
+    for (size_t i = 0; i < to_install->count; i++) {
+        axon_package_t *p = to_install->packages[i];
+        if (p->csize > 0) total_dl_size += p->csize;
+        if (p->isize > 0) total_inst_size += p->isize;
+    }
+
+    char dl_str[32], inst_str[32];
+    axon_format_size(total_dl_size, dl_str, sizeof(dl_str));
+    axon_format_size(total_inst_size, inst_str, sizeof(inst_str));
+
+    if (cfg->color) {
+        printf("%sTotal Download Size:%s    %10s\n", ANSI_BOLD, ANSI_RESET, dl_str);
+        printf("%sTotal Installed Size:%s   %10s\n\n", ANSI_BOLD, ANSI_RESET, inst_str);
+    } else {
+        printf("Total Download Size:    %10s\n", dl_str);
+        printf("Total Installed Size:   %10s\n\n", inst_str);
+    }
+
+    /* Interactive confirmation */
+    if (!noconfirm) {
+        if (cfg->color) {
+            printf("%s::%s %sProceed with installation?%s %s[Y/n]%s ",
+                   ANSI_BOLD_BLUE, ANSI_RESET, ANSI_BOLD, ANSI_RESET, ANSI_DIM, ANSI_RESET);
+        } else {
+            printf(":: Proceed with installation? [Y/n] ");
+        }
+        fflush(stdout);
+
+        char response[64];
+        if (fgets(response, sizeof(response), stdin) == NULL) {
+            printf("\n");
+            axon_pkg_list_free(to_install);
+            axon_repo_mgr_free(&mgr);
+            return 1;
+        }
+
+        char *r = response;
+        while (*r == ' ' || *r == '\t') r++;
+        size_t rlen = strlen(r);
+        while (rlen > 0 && (r[rlen - 1] == '\n' || r[rlen - 1] == '\r' || r[rlen - 1] == ' ' || r[rlen - 1] == '\t')) {
+            r[--rlen] = '\0';
+        }
+
+        if (rlen > 0 && r[0] != 'y' && r[0] != 'Y') {
+            if (cfg->color) {
+                printf("%s::%s %sInstallation cancelled by user.%s\n",
+                       ANSI_BOLD_YELLOW, ANSI_RESET, ANSI_BOLD, ANSI_RESET);
+            } else {
+                printf(":: Installation cancelled by user.\n");
+            }
+            axon_pkg_list_free(to_install);
+            axon_repo_mgr_free(&mgr);
+            return 0;
         }
         printf("\n");
     }

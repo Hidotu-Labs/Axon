@@ -193,7 +193,7 @@ int axon_package_parse_desc(axon_package_t *pkg, const char *content) {
     return 0;
 }
 
-static void format_size(size_t bytes, char *out, size_t out_len) {
+void axon_format_size(size_t bytes, char *out, size_t out_len) {
     if (bytes >= 1024 * 1024 * 1024) {
         snprintf(out, out_len, "%.2f GiB", (double)bytes / (1024.0 * 1024.0 * 1024.0));
     } else if (bytes >= 1024 * 1024) {
@@ -231,8 +231,8 @@ void axon_package_print_summary(const axon_package_t *pkg, bool color) {
 void axon_package_print_details(const axon_package_t *pkg, bool color) {
     if (!pkg) return;
     char csz[32], isz[32];
-    format_size(pkg->csize, csz, sizeof(csz));
-    format_size(pkg->isize, isz, sizeof(isz));
+    axon_format_size(pkg->csize, csz, sizeof(csz));
+    axon_format_size(pkg->isize, isz, sizeof(isz));
 
     if (color) {
         printf("\033[1;36m%-18s:\033[0m \033[1;35m%s\033[0m\n", "Repository", pkg->repo ? pkg->repo : "(unknown)");

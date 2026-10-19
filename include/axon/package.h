@@ -71,6 +71,7 @@ bool axon_is_critical_file(const char *rel_path);
 int axon_archive_check_conflicts(const char *archive_path, const char *dest_dir, const char *pkgname, const void *cfg, char ***conflicts, size_t *out_count);
 
 /* Output formatting */
+void axon_format_size(size_t bytes, char *out, size_t out_len);
 void axon_package_print_summary(const axon_package_t *pkg, bool color);
 void axon_package_print_details(const axon_package_t *pkg, bool color);
 
