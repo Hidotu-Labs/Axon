@@ -40,7 +40,8 @@ TEST_SRCS = \
 	tests/test_version.c \
 	tests/test_pkginfo.c \
 	tests/test_search.c \
-	tests/test_sync.c
+	tests/test_sync.c \
+	tests/test_archive.c
 
 TEST_BINS = $(TEST_SRCS:.c=)
 

@@ -16,12 +16,14 @@ int cmd_sync(int argc, char **argv, const axon_config_t *cfg) {
                 printf("%soptions:%s\n", ANSI_BOLD_BLUE, ANSI_RESET);
                 printf("    %s--mirrorlist <path>%s  specify custom mirrorlist file\n", ANSI_BOLD_CYAN, ANSI_RESET);
                 printf("    %s--sync-dir <path>%s    specify destination directory for .db files\n", ANSI_BOLD_CYAN, ANSI_RESET);
+                printf("    %s-v, --verbose%s        display detailed download and mirror attempts\n", ANSI_BOLD_CYAN, ANSI_RESET);
                 printf("    %s-h, --help%s           display this help message\n", ANSI_BOLD_CYAN, ANSI_RESET);
             } else {
                 printf("usage:  axon upd [options]\n\n");
                 printf("options:\n");
                 printf("    --mirrorlist <path>  specify custom mirrorlist file\n");
                 printf("    --sync-dir <path>    specify destination directory for .db files\n");
+                printf("    -v, --verbose        display detailed download and mirror attempts\n");
                 printf("    -h, --help           display this help message\n");
             }
             return 0;
@@ -29,6 +31,8 @@ int cmd_sync(int argc, char **argv, const axon_config_t *cfg) {
             local_cfg.mirrorlist_path = argv[++i];
         } else if (strcmp(argv[i], "--sync-dir") == 0 && i + 1 < argc) {
             local_cfg.sync_path = argv[++i];
+        } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
+            local_cfg.verbose = true;
         }
     }
 

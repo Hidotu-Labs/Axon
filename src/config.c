@@ -8,12 +8,23 @@ int axon_config_init(axon_config_t *cfg) {
     if (!cfg) return -1;
     memset(cfg, 0, sizeof(axon_config_t));
 
-    cfg->root_dir = strdup("/");
-    cfg->db_path = strdup("/var/lib/axon");
-    cfg->cache_path = strdup("/var/cache/axon/pkg");
-    cfg->sync_path = strdup("/var/lib/axon/sync");
+    const char *env_root = getenv("AXON_ROOT_DIR");
+    cfg->root_dir = strdup(env_root && *env_root ? env_root : "/");
+
+    const char *env_db = getenv("AXON_DB_PATH");
+    cfg->db_path = strdup(env_db && *env_db ? env_db : "/var/lib/axon");
+
+    const char *env_cache = getenv("AXON_CACHE_PATH");
+    cfg->cache_path = strdup(env_cache && *env_cache ? env_cache : "/var/cache/axon/pkg");
+
+    const char *env_sync = getenv("AXON_SYNC_PATH");
+    cfg->sync_path = strdup(env_sync && *env_sync ? env_sync : "/var/lib/axon/sync");
+
     cfg->arch_sync_path = strdup("/var/lib/pacman/sync");
-    cfg->mirrorlist_path = strdup("/etc/axon/mirrorlist");
+
+    const char *env_mirror = getenv("AXON_MIRRORLIST");
+    cfg->mirrorlist_path = strdup(env_mirror && *env_mirror ? env_mirror : "/etc/axon/mirrorlist");
+
     cfg->color = isatty(STDOUT_FILENO);
     cfg->verbose = false;
 

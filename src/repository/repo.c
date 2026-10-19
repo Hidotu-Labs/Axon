@@ -203,18 +203,18 @@ int axon_repo_sync_all(axon_repo_mgr_t *mgr) {
 
     const char *sync_dir = cfg->sync_path ? cfg->sync_path : "/var/lib/axon/sync";
 
-    /* Ensure target directory exists */
-    if (axon_mkdir_p(sync_dir, 0755) != 0) {
+    /* Ensure target directory exists and is writable */
+    if (axon_mkdir_p(sync_dir, 0755) != 0 || access(sync_dir, W_OK) != 0) {
         if (color) {
-            fprintf(stderr, "%serror:%s failed to create sync directory '%s%s%s': %s\n",
+            fprintf(stderr, "%serror:%s cannot write to sync directory '%s%s%s': %s\n",
                     ANSI_BOLD_RED, ANSI_RESET, ANSI_BOLD_WHITE, sync_dir, ANSI_RESET, strerror(errno));
-            if (errno == EACCES || errno == EPERM) {
+            if (errno == EACCES || errno == EPERM || geteuid() != 0) {
                 fprintf(stderr, "%s::%s Run with sudo or specify a writable directory via '--sync-dir <path>' or AXON_SYNC_PATH.\n",
                         ANSI_BOLD_YELLOW, ANSI_RESET);
             }
         } else {
-            fprintf(stderr, "error: failed to create sync directory '%s': %s\n", sync_dir, strerror(errno));
-            if (errno == EACCES || errno == EPERM) {
+            fprintf(stderr, "error: cannot write to sync directory '%s': %s\n", sync_dir, strerror(errno));
+            if (errno == EACCES || errno == EPERM || geteuid() != 0) {
                 fprintf(stderr, ":: Run with sudo or specify a writable directory via '--sync-dir <path>' or AXON_SYNC_PATH.\n");
             }
         }
@@ -281,6 +281,7 @@ int axon_repo_sync_all(axon_repo_mgr_t *mgr) {
         snprintf(display_name, sizeof(display_name), "%s.db", repo_name);
 
         bool success = false;
+        bool local_file_error = false;
 
         /* Try mirrors in sequence */
         for (size_t m = 0; m < mirror_count; m++) {
@@ -304,15 +305,20 @@ int axon_repo_sync_all(axon_repo_mgr_t *mgr) {
                 symlink(display_name, gz_link);
 
                 break;
+            } else if (rc == -2) {
+                local_file_error = true;
+                break;
             }
         }
 
         if (!success) {
-            if (color) {
-                fprintf(stderr, "  %serror:%s failed to download %s%s.db%s from all mirrors\n",
-                        ANSI_BOLD_RED, ANSI_RESET, ANSI_BOLD_WHITE, repo_name, ANSI_RESET);
-            } else {
-                fprintf(stderr, "  error: failed to download %s.db from all mirrors\n", repo_name);
+            if (!local_file_error) {
+                if (color) {
+                    fprintf(stderr, "  %serror:%s failed to download %s%s.db%s from all mirrors\n",
+                            ANSI_BOLD_RED, ANSI_RESET, ANSI_BOLD_WHITE, repo_name, ANSI_RESET);
+                } else {
+                    fprintf(stderr, "  error: failed to download %s.db from all mirrors\n", repo_name);
+                }
             }
             overall_status = -1;
         }
@@ -321,4 +327,137 @@ int axon_repo_sync_all(axon_repo_mgr_t *mgr) {
     free(custom_repo_names);
     axon_mirrorlist_free(mirrors, mirror_count);
     return overall_status;
+}
+
+int axon_repo_download_pkg(axon_repo_mgr_t *mgr, const axon_package_t *pkg, const char *dest_dir, char **out_filepath) {
+    if (!mgr || !mgr->cfg || !pkg || !dest_dir) return -1;
+    const axon_config_t *cfg = mgr->cfg;
+    bool color = cfg->color;
+
+    if (axon_mkdir_p(dest_dir, 0755) != 0 || access(dest_dir, W_OK) != 0) {
+        if (color) {
+            fprintf(stderr, "%serror:%s cannot write to cache directory '%s%s%s': %s\n",
+                    ANSI_BOLD_RED, ANSI_RESET, ANSI_BOLD_WHITE, dest_dir, ANSI_RESET, strerror(errno));
+            if (errno == EACCES || errno == EPERM || geteuid() != 0) {
+                fprintf(stderr, "%s::%s Run with sudo or specify a writable directory via AXON_CACHE_PATH.\n",
+                        ANSI_BOLD_YELLOW, ANSI_RESET);
+            }
+        } else {
+            fprintf(stderr, "error: cannot write to cache directory '%s': %s\n", dest_dir, strerror(errno));
+            if (errno == EACCES || errno == EPERM || geteuid() != 0) {
+                fprintf(stderr, ":: Run with sudo or specify a writable directory via AXON_CACHE_PATH.\n");
+            }
+        }
+        return -1;
+    }
+
+    struct utsname un;
+    const char *repo_arch = "x86_64";
+    if (uname(&un) == 0) {
+        repo_arch = un.machine;
+    }
+
+    const char *pkg_arch = (pkg->arch && strlen(pkg->arch) > 0) ? pkg->arch : repo_arch;
+
+    char generated_filename[512];
+    const char *filename = pkg->filename;
+    if (!filename || strlen(filename) == 0) {
+        snprintf(generated_filename, sizeof(generated_filename), "%s-%s-%s.pkg.tar.zst",
+                 pkg->name ? pkg->name : "package",
+                 pkg->version ? pkg->version : "1.0",
+                 pkg_arch);
+        filename = generated_filename;
+    }
+
+    char dest_file[1024];
+    snprintf(dest_file, sizeof(dest_file), "%s/%s", dest_dir, filename);
+
+    /* If file already exists and matches expected size (if csize > 0), reuse it */
+    struct stat st;
+    if (stat(dest_file, &st) == 0 && S_ISREG(st.st_mode) && (pkg->csize == 0 || (size_t)st.st_size == pkg->csize)) {
+        if (out_filepath) {
+            *out_filepath = strdup(dest_file);
+        }
+        return 0;
+    }
+
+    /* Load mirrorlist */
+    char **mirrors = NULL;
+    size_t mirror_count = 0;
+    axon_mirrorlist_load(cfg->mirrorlist_path, &mirrors, &mirror_count);
+
+    if (mirror_count == 0) {
+        if (color) {
+            fprintf(stderr, "%serror:%s no mirror servers configured or available\n", ANSI_BOLD_RED, ANSI_RESET);
+        } else {
+            fprintf(stderr, "error: no mirror servers configured or available\n");
+        }
+        return -1;
+    }
+
+    const char *repo_name = pkg->repo ? pkg->repo : "extra";
+
+    bool success = false;
+    for (size_t m = 0; m < mirror_count; m++) {
+        char base_url[1024];
+        base_url[0] = '\0';
+        const char *src = mirrors[m];
+        char *dst = base_url;
+        size_t rem = sizeof(base_url) - 1;
+
+        while (*src && rem > 0) {
+            if (strncmp(src, "$repo", 5) == 0) {
+                size_t rlen = strlen(repo_name);
+                if (rlen >= rem) break;
+                memcpy(dst, repo_name, rlen);
+                dst += rlen;
+                rem -= rlen;
+                src += 5;
+            } else if (strncmp(src, "$arch", 5) == 0) {
+                size_t alen = strlen(repo_arch);
+                if (alen >= rem) break;
+                memcpy(dst, repo_arch, alen);
+                dst += alen;
+                rem -= alen;
+                src += 5;
+            } else {
+                *dst++ = *src++;
+                rem--;
+            }
+        }
+        *dst = '\0';
+
+        char *db_pos = strstr(base_url, ".db");
+        if (db_pos) *db_pos = '\0';
+        size_t blen = strlen(base_url);
+        if (blen > 0 && base_url[blen - 1] == '/') {
+            base_url[blen - 1] = '\0';
+        }
+
+        char pkg_url[1536];
+        snprintf(pkg_url, sizeof(pkg_url), "%s/%s", base_url, filename);
+
+        if (cfg->verbose) {
+            printf("   Downloading from %s\n", pkg_url);
+        }
+
+        int rc = axon_download_file(pkg_url, dest_file, filename, true, color);
+        if (rc == 0) {
+            success = true;
+            break;
+        } else if (rc == -2) {
+            break;
+        }
+    }
+
+    axon_mirrorlist_free(mirrors, mirror_count);
+
+    if (success) {
+        if (out_filepath) {
+            *out_filepath = strdup(dest_file);
+        }
+        return 0;
+    }
+
+    return -1;
 }

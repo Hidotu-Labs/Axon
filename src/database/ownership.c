@@ -8,26 +8,12 @@
 #include <string.h>
 #include <sys/stat.h>
 
-int axon_db_check_ownership(const axon_config_t *cfg, const char *filepath, char **owner_pkg) {
-    if (!filepath || !owner_pkg) return -1;
-    *owner_pkg = NULL;
-
-    const char *db_dir = "/var/lib/pacman/local";
-    if (cfg && cfg->db_path) {
-        char local_path[512];
-        snprintf(local_path, sizeof(local_path), "%s/local", cfg->db_path);
-        struct stat st;
-        if (stat(local_path, &st) == 0 && S_ISDIR(st.st_mode)) {
-            db_dir = local_path;
-        }
-    }
-
+static char *find_owner_in_dir(const char *db_dir, const char *rel_path) {
+    if (!db_dir || !rel_path) return NULL;
     DIR *dir = opendir(db_dir);
-    if (!dir) return -1;
+    if (!dir) return NULL;
 
-    /* Strip leading slash for relative matching */
-    const char *rel_path = (*filepath == '/') ? filepath + 1 : filepath;
-
+    char *owner = NULL;
     struct dirent *de;
     while ((de = readdir(dir)) != NULL) {
         if (de->d_name[0] == '.') continue;
@@ -43,15 +29,43 @@ int axon_db_check_ownership(const axon_config_t *cfg, const char *filepath, char
                 line[--l] = '\0';
             }
             if (strcmp(line, rel_path) == 0) {
-                *owner_pkg = strdup(de->d_name);
-                fclose(fp);
-                closedir(dir);
-                return 0;
+                owner = strdup(de->d_name);
+                break;
             }
         }
         fclose(fp);
+        if (owner) break;
     }
 
     closedir(dir);
+    return owner;
+}
+
+int axon_db_check_ownership(const axon_config_t *cfg, const char *filepath, char **owner_pkg) {
+    if (!filepath || !owner_pkg) return -1;
+    *owner_pkg = NULL;
+
+    /* Strip leading slash for relative matching */
+    const char *rel_path = (*filepath == '/') ? filepath + 1 : filepath;
+
+    /* 1. Check Axon local database */
+    if (cfg && cfg->db_path) {
+        char axon_local[512];
+        snprintf(axon_local, sizeof(axon_local), "%s/local", cfg->db_path);
+        *owner_pkg = find_owner_in_dir(axon_local, rel_path);
+        if (*owner_pkg) return 0;
+    }
+
+    /* 2. Check Pacman local database */
+    char pacman_local[512];
+    if (cfg && cfg->root_dir && strcmp(cfg->root_dir, "/") != 0) {
+        snprintf(pacman_local, sizeof(pacman_local), "%s/var/lib/pacman/local", cfg->root_dir);
+    } else {
+        snprintf(pacman_local, sizeof(pacman_local), "/var/lib/pacman/local");
+    }
+
+    *owner_pkg = find_owner_in_dir(pacman_local, rel_path);
+    if (*owner_pkg) return 0;
+
     return -1;
 }

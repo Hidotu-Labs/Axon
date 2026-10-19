@@ -116,7 +116,13 @@ int axon_download_file(const char *url, const char *dest_path, const char *displ
 
     FILE *fp = fopen(part_path, "wb");
     if (!fp) {
-        return -1;
+        if (color) {
+            fprintf(stderr, "  %serror:%s failed to create '%s%s%s': %s\n",
+                    ANSI_BOLD_RED, ANSI_RESET, ANSI_BOLD_WHITE, part_path, ANSI_RESET, strerror(errno));
+        } else {
+            fprintf(stderr, "  error: failed to create '%s': %s\n", part_path, strerror(errno));
+        }
+        return -2;
     }
 
     CURL *curl = curl_easy_init();
@@ -168,8 +174,14 @@ int axon_download_file(const char *url, const char *dest_path, const char *displ
 
     /* Atomically rename part to target */
     if (rename(part_path, dest_path) != 0) {
+        if (color) {
+            fprintf(stderr, "  %serror:%s failed to finalize '%s%s%s': %s\n",
+                    ANSI_BOLD_RED, ANSI_RESET, ANSI_BOLD_WHITE, dest_path, ANSI_RESET, strerror(errno));
+        } else {
+            fprintf(stderr, "  error: failed to finalize '%s': %s\n", dest_path, strerror(errno));
+        }
         remove(part_path);
-        return -1;
+        return -2;
     }
 
     return 0;

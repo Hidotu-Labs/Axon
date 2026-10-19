@@ -124,6 +124,11 @@ int main(int argc, char **argv) {
             cfg.color = true;
         } else if (strcmp(argv[i], "--no-color") == 0 || strcmp(argv[i], "--color=never") == 0) {
             cfg.color = false;
+        } else if (strcmp(argv[i], "--verbose") == 0) {
+            cfg.verbose = true;
+        } else if (strcmp(argv[i], "--mirrorlist") == 0 && i + 1 < argc) {
+            free(cfg.mirrorlist_path);
+            cfg.mirrorlist_path = strdup(argv[++i]);
         } else if (strcmp(argv[i], "--sync-dir") == 0 && i + 1 < argc) {
             free(cfg.sync_path);
             cfg.sync_path = strdup(argv[++i]);

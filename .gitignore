@@ -6,6 +6,7 @@
 /tests/test_pkginfo
 /tests/test_search
 /tests/test_sync
+/tests/test_archive
 
 # Object files
 *.o

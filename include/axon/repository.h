@@ -46,6 +46,7 @@ int axon_mkdir_p(const char *path, mode_t mode);
 /* Downloader */
 int axon_download_file(const char *url, const char *dest_path, const char *display_name, bool show_progress, bool color);
 int axon_repo_sync_all(axon_repo_mgr_t *mgr);
+int axon_repo_download_pkg(axon_repo_mgr_t *mgr, const axon_package_t *pkg, const char *dest_dir, char **out_filepath);
 
 #ifdef __cplusplus
 }

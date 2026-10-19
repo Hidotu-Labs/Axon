@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 int axon_db_init(const axon_config_t *cfg) {
@@ -18,31 +19,9 @@ int axon_db_init(const axon_config_t *cfg) {
     return 0;
 }
 
-static const char *get_local_db_dir(const axon_config_t *cfg, char *out_buf, size_t out_len) {
-    /* Check axon local db first */
-    if (cfg && cfg->db_path) {
-        snprintf(out_buf, out_len, "%s/local", cfg->db_path);
-        struct stat st;
-        if (stat(out_buf, &st) == 0 && S_ISDIR(st.st_mode)) {
-            return out_buf;
-        }
-    }
-    /* Fallback to pacman local db if on arch-based system */
-    const char *pacman_local = "/var/lib/pacman/local";
-    struct stat st;
-    if (stat(pacman_local, &st) == 0 && S_ISDIR(st.st_mode)) {
-        snprintf(out_buf, out_len, "%s", pacman_local);
-        return out_buf;
-    }
-    return NULL;
-}
-
-bool axon_db_is_installed(const axon_config_t *cfg, const char *pkgname) {
-    if (!pkgname) return false;
-    char db_dir[512];
-    if (!get_local_db_dir(cfg, db_dir, sizeof(db_dir))) return false;
-
-    DIR *dir = opendir(db_dir);
+static bool dir_has_package(const char *dir_path, const char *pkgname) {
+    if (!dir_path || !pkgname) return false;
+    DIR *dir = opendir(dir_path);
     if (!dir) return false;
 
     bool found = false;
@@ -60,12 +39,53 @@ bool axon_db_is_installed(const axon_config_t *cfg, const char *pkgname) {
     return found;
 }
 
-axon_package_t *axon_db_get_installed(const axon_config_t *cfg, const char *pkgname) {
-    if (!pkgname) return NULL;
-    char db_dir[512];
-    if (!get_local_db_dir(cfg, db_dir, sizeof(db_dir))) return NULL;
+static bool dir_provides_package(const char *dir_path, const char *dep_name) {
+    if (!dir_path || !dep_name) return false;
+    DIR *dir = opendir(dir_path);
+    if (!dir) return false;
 
-    DIR *dir = opendir(db_dir);
+    struct dirent *de;
+    bool found = false;
+    char path[1024];
+
+    while (!found && (de = readdir(dir)) != NULL) {
+        if (de->d_name[0] == '.') continue;
+        snprintf(path, sizeof(path), "%s/%s/desc", dir_path, de->d_name);
+        FILE *fp = fopen(path, "r");
+        if (!fp) continue;
+
+        char line[256];
+        bool in_provides = false;
+        while (fgets(line, sizeof(line), fp)) {
+            size_t l = strlen(line);
+            while (l > 0 && (line[l - 1] == '\n' || line[l - 1] == '\r')) line[--l] = '\0';
+            if (strcmp(line, "%PROVIDES%") == 0) {
+                in_provides = true;
+                continue;
+            }
+            if (in_provides) {
+                if (line[0] == '%' || line[0] == '\0') {
+                    in_provides = false;
+                    continue;
+                }
+                char *eq = strpbrk(line, "<>=");
+                if (eq) *eq = '\0';
+                if (strcmp(line, dep_name) == 0) {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        fclose(fp);
+    }
+
+    closedir(dir);
+    return found;
+}
+
+static axon_package_t *dir_get_package(const char *dir_path, const char *pkgname) {
+    if (!dir_path || !pkgname) return NULL;
+    DIR *dir = opendir(dir_path);
     if (!dir) return NULL;
 
     axon_package_t *pkg = NULL;
@@ -75,7 +95,7 @@ axon_package_t *axon_db_get_installed(const axon_config_t *cfg, const char *pkgn
     while ((de = readdir(dir)) != NULL) {
         if (strncmp(de->d_name, pkgname, name_len) == 0 && de->d_name[name_len] == '-') {
             char desc_path[1024];
-            snprintf(desc_path, sizeof(desc_path), "%s/%s/desc", db_dir, de->d_name);
+            snprintf(desc_path, sizeof(desc_path), "%s/%s/desc", dir_path, de->d_name);
             FILE *fp = fopen(desc_path, "r");
             if (fp) {
                 fseek(fp, 0, SEEK_END);
@@ -100,6 +120,85 @@ axon_package_t *axon_db_get_installed(const axon_config_t *cfg, const char *pkgn
 
     closedir(dir);
     return pkg;
+}
+
+static void get_pacman_local_dir(const axon_config_t *cfg, char *out_buf, size_t out_len) {
+    if (cfg && cfg->root_dir && strcmp(cfg->root_dir, "/") != 0) {
+        snprintf(out_buf, out_len, "%s/var/lib/pacman/local", cfg->root_dir);
+    } else {
+        snprintf(out_buf, out_len, "/var/lib/pacman/local");
+    }
+}
+
+static const char *get_local_db_dir(const axon_config_t *cfg, char *out_buf, size_t out_len) {
+    /* Check axon local db first */
+    if (cfg && cfg->db_path) {
+        snprintf(out_buf, out_len, "%s/local", cfg->db_path);
+        struct stat st;
+        if (stat(out_buf, &st) == 0 && S_ISDIR(st.st_mode)) {
+            return out_buf;
+        }
+    }
+    /* Fallback to pacman local db if on arch-based system */
+    get_pacman_local_dir(cfg, out_buf, out_len);
+    struct stat st;
+    if (stat(out_buf, &st) == 0 && S_ISDIR(st.st_mode)) {
+        return out_buf;
+    }
+    return NULL;
+}
+
+bool axon_db_is_installed(const axon_config_t *cfg, const char *pkgname) {
+    if (!pkgname) return false;
+
+    /* 1. Check Axon local database */
+    if (cfg && cfg->db_path) {
+        char axon_local[512];
+        snprintf(axon_local, sizeof(axon_local), "%s/local", cfg->db_path);
+        if (dir_has_package(axon_local, pkgname)) {
+            return true;
+        }
+    }
+
+    /* 2. Check Pacman local database */
+    char pacman_local[512];
+    get_pacman_local_dir(cfg, pacman_local, sizeof(pacman_local));
+    if (dir_has_package(pacman_local, pkgname)) {
+        return true;
+    }
+
+    /* 3. Check provides in Axon local db */
+    if (cfg && cfg->db_path) {
+        char axon_local[512];
+        snprintf(axon_local, sizeof(axon_local), "%s/local", cfg->db_path);
+        if (dir_provides_package(axon_local, pkgname)) {
+            return true;
+        }
+    }
+
+    /* 4. Check provides in Pacman local db */
+    if (dir_provides_package(pacman_local, pkgname)) {
+        return true;
+    }
+
+    return false;
+}
+
+axon_package_t *axon_db_get_installed(const axon_config_t *cfg, const char *pkgname) {
+    if (!pkgname) return NULL;
+
+    /* 1. Check Axon local database */
+    if (cfg && cfg->db_path) {
+        char axon_local[512];
+        snprintf(axon_local, sizeof(axon_local), "%s/local", cfg->db_path);
+        axon_package_t *pkg = dir_get_package(axon_local, pkgname);
+        if (pkg) return pkg;
+    }
+
+    /* 2. Check Pacman local database */
+    char pacman_local[512];
+    get_pacman_local_dir(cfg, pacman_local, sizeof(pacman_local));
+    return dir_get_package(pacman_local, pkgname);
 }
 
 int axon_db_list_installed(const axon_config_t *cfg, axon_pkg_list_t *list) {
@@ -141,17 +240,172 @@ int axon_db_list_installed(const axon_config_t *cfg, axon_pkg_list_t *list) {
 }
 
 int axon_db_record_install(const axon_config_t *cfg, const axon_package_t *pkg, const char **files, size_t file_count) {
-    (void)cfg;
-    (void)pkg;
-    (void)files;
-    (void)file_count;
-    /* Record installed package entries */
+    if (!cfg || !cfg->db_path || !pkg || !pkg->name || !pkg->version) return -1;
+
+    char local_dir[512];
+    snprintf(local_dir, sizeof(local_dir), "%s/local", cfg->db_path);
+    mkdir(cfg->db_path, 0755);
+    mkdir(local_dir, 0755);
+
+    char pkg_dir[768];
+    snprintf(pkg_dir, sizeof(pkg_dir), "%s/%s-%s", local_dir, pkg->name, pkg->version);
+    mkdir(pkg_dir, 0755);
+
+    /* Write desc file */
+    char desc_file[1024];
+    snprintf(desc_file, sizeof(desc_file), "%s/desc", pkg_dir);
+    FILE *fp = fopen(desc_file, "w");
+    if (fp) {
+        fprintf(fp, "%%NAME%%\n%s\n\n", pkg->name);
+        fprintf(fp, "%%VERSION%%\n%s\n\n", pkg->version);
+        if (pkg->base) fprintf(fp, "%%BASE%%\n%s\n\n", pkg->base);
+        if (pkg->desc) fprintf(fp, "%%DESC%%\n%s\n\n", pkg->desc);
+        if (pkg->url) fprintf(fp, "%%URL%%\n%s\n\n", pkg->url);
+        if (pkg->arch) fprintf(fp, "%%ARCH%%\n%s\n\n", pkg->arch);
+        if (pkg->builddate > 0) fprintf(fp, "%%BUILDDATE%%\n%lld\n\n", (long long)pkg->builddate);
+        fprintf(fp, "%%INSTALLDATE%%\n%lld\n\n", (long long)time(NULL));
+        if (pkg->packager) fprintf(fp, "%%PACKAGER%%\n%s\n\n", pkg->packager);
+        if (pkg->isize > 0) fprintf(fp, "%%SIZE%%\n%zu\n\n", pkg->isize);
+        fprintf(fp, "%%REASON%%\n0\n\n");
+
+        if (pkg->licenses_count > 0 && pkg->licenses) {
+            fprintf(fp, "%%LICENSE%%\n");
+            for (size_t i = 0; i < pkg->licenses_count; i++) {
+                fprintf(fp, "%s\n", pkg->licenses[i]);
+            }
+            fprintf(fp, "\n");
+        }
+
+        if (pkg->depends_count > 0 && pkg->depends) {
+            fprintf(fp, "%%DEPENDS%%\n");
+            for (size_t i = 0; i < pkg->depends_count; i++) {
+                fprintf(fp, "%s\n", pkg->depends[i]);
+            }
+            fprintf(fp, "\n");
+        }
+
+        fclose(fp);
+    }
+
+    /* Write files file */
+    char files_file[1024];
+    snprintf(files_file, sizeof(files_file), "%s/files", pkg_dir);
+    FILE *ffp = fopen(files_file, "w");
+    if (ffp) {
+        fprintf(ffp, "%%FILES%%\n");
+        for (size_t i = 0; i < file_count; i++) {
+            if (files[i]) {
+                fprintf(ffp, "%s\n", files[i]);
+            }
+        }
+        fclose(ffp);
+    }
+
     return 0;
 }
 
 int axon_db_remove_package(const axon_config_t *cfg, const char *pkgname) {
-    (void)cfg;
-    (void)pkgname;
-    /* Remove package from local db */
+    if (!cfg || !cfg->db_path || !pkgname) return -1;
+
+    /* Never remove protected system packages on the host filesystem */
+    if (axon_is_protected_pkg(pkgname) && (!cfg->root_dir || strcmp(cfg->root_dir, "/") == 0)) {
+        return -1;
+    }
+
+    char local_dir[512];
+    snprintf(local_dir, sizeof(local_dir), "%s/local", cfg->db_path);
+
+    DIR *dir = opendir(local_dir);
+    if (!dir) return -1;
+
+    struct dirent *de;
+    size_t name_len = strlen(pkgname);
+    char target_pkg_dir[768] = {0};
+
+    while ((de = readdir(dir)) != NULL) {
+        if (strncmp(de->d_name, pkgname, name_len) == 0 && de->d_name[name_len] == '-') {
+            snprintf(target_pkg_dir, sizeof(target_pkg_dir), "%s/%s", local_dir, de->d_name);
+            break;
+        }
+    }
+    closedir(dir);
+
+    if (target_pkg_dir[0] == '\0') {
+        return -1;
+    }
+
+    const char *root = (cfg->root_dir && strlen(cfg->root_dir) > 0) ? cfg->root_dir : "/";
+
+    /* Read files list and remove each file */
+    char files_path[1024];
+    snprintf(files_path, sizeof(files_path), "%s/files", target_pkg_dir);
+    FILE *fp = fopen(files_path, "r");
+    if (fp) {
+        char line[1024];
+        bool in_files = false;
+        char **dirs_to_prune = NULL;
+        size_t dir_count = 0;
+
+        while (fgets(line, sizeof(line), fp)) {
+            size_t l = strlen(line);
+            while (l > 0 && (line[l - 1] == '\r' || line[l - 1] == '\n' || line[l - 1] == ' ' || line[l - 1] == '\t')) {
+                line[--l] = '\0';
+            }
+            if (strcmp(line, "%FILES%") == 0) {
+                in_files = true;
+                continue;
+            }
+            if (!in_files || line[0] == '\0') continue;
+
+            /* Never unlink critical system files under any circumstances */
+            if (axon_is_critical_file(line)) {
+                continue;
+            }
+
+            char full_path[2048];
+            if (strcmp(root, "/") == 0) {
+                snprintf(full_path, sizeof(full_path), "/%s", line);
+            } else {
+                snprintf(full_path, sizeof(full_path), "%s/%s", root, line);
+            }
+
+            struct stat st;
+            if (lstat(full_path, &st) == 0) {
+                if (S_ISDIR(st.st_mode)) {
+                    char **new_d = realloc(dirs_to_prune, sizeof(char *) * (dir_count + 1));
+                    if (new_d) {
+                        dirs_to_prune = new_d;
+                        dirs_to_prune[dir_count++] = strdup(full_path);
+                    }
+                } else {
+                    unlink(full_path);
+                }
+            }
+        }
+        fclose(fp);
+
+        if (dirs_to_prune) {
+            for (size_t i = dir_count; i > 0; i--) {
+                rmdir(dirs_to_prune[i - 1]);
+                free(dirs_to_prune[i - 1]);
+            }
+            free(dirs_to_prune);
+        }
+    }
+
+    /* Remove files inside target_pkg_dir */
+    DIR *pkg_d = opendir(target_pkg_dir);
+    if (pkg_d) {
+        struct dirent *pde;
+        while ((pde = readdir(pkg_d)) != NULL) {
+            if (strcmp(pde->d_name, ".") == 0 || strcmp(pde->d_name, "..") == 0) continue;
+            char entry_path[1024];
+            snprintf(entry_path, sizeof(entry_path), "%s/%s", target_pkg_dir, pde->d_name);
+            unlink(entry_path);
+        }
+        closedir(pkg_d);
+    }
+    rmdir(target_pkg_dir);
+
     return 0;
 }

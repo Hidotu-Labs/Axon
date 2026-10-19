@@ -63,6 +63,12 @@ int axon_version_cmp(const char *ver1, const char *ver2);
 
 /* Archive manipulation */
 int axon_archive_extract(const char *archive_path, const char *dest_dir);
+int axon_archive_extract_pkg(const char *archive_path, const char *dest_dir, char ***out_files, size_t *out_count);
+
+/* System safety & protection */
+bool axon_is_protected_pkg(const char *name);
+bool axon_is_critical_file(const char *rel_path);
+int axon_archive_check_conflicts(const char *archive_path, const char *dest_dir, const char *pkgname, const void *cfg, char ***conflicts, size_t *out_count);
 
 /* Output formatting */
 void axon_package_print_summary(const axon_package_t *pkg, bool color);
