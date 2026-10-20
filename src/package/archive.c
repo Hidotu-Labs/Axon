@@ -177,7 +177,7 @@ int axon_archive_extract_pkg(const char *archive_path, const char *dest_dir, cha
     struct archive *ext = archive_write_disk_new();
     struct archive_entry *entry;
     int flags = ARCHIVE_EXTRACT_TIME | ARCHIVE_EXTRACT_PERM | ARCHIVE_EXTRACT_ACL | ARCHIVE_EXTRACT_FFLAGS |
-                ARCHIVE_EXTRACT_SECURE_NODOTDOT | ARCHIVE_EXTRACT_SECURE_SYMLINKS;
+                ARCHIVE_EXTRACT_SECURE_NODOTDOT;
     int r;
 
     archive_read_support_format_all(a);
@@ -258,6 +258,19 @@ int axon_archive_extract_pkg(const char *archive_path, const char *dest_dir, cha
                 *out_files = new_files;
                 (*out_files)[*out_count] = strdup(rec_path);
                 (*out_count)++;
+            }
+        }
+
+        /* Ensure binaries in bin/ or sbin/ have executable permissions */
+        if (archive_entry_filetype(entry) == AE_IFREG) {
+            const char *p = current_path;
+            while (*p == '/') p++;
+            if (strncmp(p, "bin/", 4) == 0 || strncmp(p, "usr/bin/", 8) == 0 ||
+                strncmp(p, "sbin/", 5) == 0 || strncmp(p, "usr/sbin/", 9) == 0) {
+                mode_t m = archive_entry_mode(entry);
+                if (!(m & 0111)) {
+                    archive_entry_set_mode(entry, m | 0755);
+                }
             }
         }
 

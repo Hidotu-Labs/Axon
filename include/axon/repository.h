@@ -31,6 +31,10 @@ void axon_repo_mgr_free(axon_repo_mgr_t *mgr);
 int axon_repo_search(axon_repo_mgr_t *mgr, const char *query, axon_pkg_list_t *results);
 axon_package_t *axon_repo_find(axon_repo_mgr_t *mgr, const char *pkgname);
 
+/* Custom / GitHub Repository specific searching */
+int axon_custom_repo_search(const axon_config_t *cfg, const axon_repo_t *repo, const char *query, axon_pkg_list_t *results);
+axon_package_t *axon_custom_repo_find(const axon_config_t *cfg, const axon_repo_t *repo, const char *pkgname);
+
 /* Arch Linux repository specific searching */
 int axon_arch_search_db(const char *db_path, const char *repo_name, const char *query, axon_pkg_list_t *results);
 int axon_arch_search_all(const axon_config_t *cfg, const char *query, axon_pkg_list_t *results);

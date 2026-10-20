@@ -217,13 +217,13 @@ void axon_package_print_summary(const axon_package_t *pkg, bool color) {
             printf("\033[1;34m[arch]\033[0m \033[1;35m%s\033[0m/\033[1;37m%s\033[0m \033[1;32m%s\033[0m\n",
                    repo, name, ver);
         } else {
-            printf("\033[1;36m[avory]\033[0m \033[1;35m%s\033[0m/\033[1;37m%s\033[0m \033[1;32m%s\033[0m\n",
+            printf("\033[1;36m[ascension]\033[0m \033[1;35m%s\033[0m/\033[1;37m%s\033[0m \033[1;32m%s\033[0m\n",
                    repo, name, ver);
         }
         printf("    %s\n", desc);
     } else {
         printf("[%s] %s/%s %s\n    %s\n",
-               pkg->is_arch ? "arch" : "avory",
+               pkg->is_arch ? "arch" : "ascension",
                repo, name, ver, desc);
     }
 }
@@ -236,7 +236,7 @@ void axon_package_print_details(const axon_package_t *pkg, bool color) {
 
     if (color) {
         printf("\033[1;36m%-18s:\033[0m \033[1;35m%s\033[0m\n", "Repository", pkg->repo ? pkg->repo : "(unknown)");
-        printf("\033[1;36m%-18s:\033[0m \033[1;34m%s\033[0m\n", "Source", pkg->is_arch ? "Arch Linux (fallback)" : "AvoryOS");
+        printf("\033[1;36m%-18s:\033[0m \033[1;34m%s\033[0m\n", "Source", pkg->is_arch ? "Arch Linux (fallback)" : "Ascension");
         printf("\033[1;36m%-18s:\033[0m \033[1;37m%s\033[0m\n", "Name", pkg->name ? pkg->name : "(unknown)");
         printf("\033[1;36m%-18s:\033[0m \033[1;32m%s\033[0m\n", "Version", pkg->version ? pkg->version : "(unknown)");
         printf("\033[1;36m%-18s:\033[0m %s\n", "Description", pkg->desc ? pkg->desc : "");
@@ -298,7 +298,7 @@ void axon_package_print_details(const axon_package_t *pkg, bool color) {
         const char *h_fmt = "%-18s: %s\n";
 
         printf(h_fmt, "Repository", pkg->repo ? pkg->repo : "(unknown)");
-        printf(h_fmt, "Source", pkg->is_arch ? "Arch Linux (fallback)" : "AvoryOS");
+        printf(h_fmt, "Source", pkg->is_arch ? "Arch Linux (fallback)" : "Ascension");
         printf(h_fmt, "Name", pkg->name ? pkg->name : "(unknown)");
         printf(h_fmt, "Version", pkg->version ? pkg->version : "(unknown)");
         printf(h_fmt, "Description", pkg->desc ? pkg->desc : "");

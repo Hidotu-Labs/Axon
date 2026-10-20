@@ -13,3 +13,6 @@
 src/*.o
 src/**/*.o
 tests/*.o
+
+# Package archives
+*.tar.gz
