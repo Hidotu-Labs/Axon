@@ -4,6 +4,7 @@
 #include "cli/cli.h"
 #include "axon/config.h"
 #include "axon/color.h"
+#include "axon/lifecycle.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,6 +28,12 @@ static void print_banner(bool color) {
 
 static void print_usage(const char *prog, bool color) {
     (void)prog;
+    printf("Rootfs commands: rootfs, configure, cache, image, map (use <command> --help)\n\n");
+    printf("State options (before or after operation):\n"
+           "    --root <path>       existing target root; isolate package state there\n"
+           "    --db-path <path>    explicit local package database\n"
+           "    --cache-dir <path>  explicit archive cache\n"
+           "    --sync-dir <path>   explicit repository database directory\n\n");
     if (color) {
         printf("%susage:%s  %saxon%s %s<operation>%s [...]\n\n",
                ANSI_BOLD, ANSI_RESET, ANSI_BOLD_CYAN, ANSI_RESET, ANSI_BOLD, ANSI_RESET);
@@ -110,6 +117,37 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    /* Consume state options before dispatch so all operations use the same root.
+     * Apply explicit state-directory overrides after rooting, independent of order. */
+    const char *root_arg = NULL;
+    const char *db_arg = NULL, *cache_arg = NULL, *sync_arg = NULL;
+    for (int i = 1; i < argc; i++) {
+        const char **value = NULL;
+        if (strcmp(argv[i], "--root") == 0) value = &root_arg;
+        else if (strcmp(argv[i], "--db-path") == 0) value = &db_arg;
+        else if (strcmp(argv[i], "--cache-dir") == 0) value = &cache_arg;
+        else if (strcmp(argv[i], "--sync-dir") == 0) value = &sync_arg;
+        if (!value) continue;
+        if (i + 1 >= argc || !*argv[i + 1] || argv[i + 1][0] == '-') {
+            fprintf(stderr, "error: %s requires a path\n", argv[i]);
+            axon_config_free(&cfg);
+            return 1;
+        }
+        *value = argv[i + 1];
+        memmove(&argv[i], &argv[i + 2], (size_t)(argc - i - 1) * sizeof(*argv));
+        argc -= 2;
+        i--;
+    }
+    if ((root_arg || strcmp(cfg.root_dir, "/") != 0) &&
+        axon_config_set_root(&cfg, root_arg ? root_arg : cfg.root_dir) != 0) {
+        fprintf(stderr, "error: --root must name an existing directory\n");
+        axon_config_free(&cfg);
+        return 1;
+    }
+    if (db_arg) { free(cfg.db_path); cfg.db_path = strdup(db_arg); }
+    if (cache_arg) { free(cfg.cache_path); cfg.cache_path = strdup(cache_arg); }
+    if (sync_arg) { free(cfg.sync_path); cfg.sync_path = strdup(sync_arg); }
+
     int cmd_idx = -1;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -171,6 +209,11 @@ int main(int argc, char **argv) {
         exit_code = cmd_sync(sub_argc, sub_argv, &cfg);
     } else if (strcmp(cmd, "upg") == 0 || strcmp(cmd, "upgrade") == 0) {
         exit_code = cmd_upgrade(sub_argc, sub_argv, &cfg);
+    } else if (strcmp(cmd, "replay-post-install") == 0) {
+        exit_code = axon_replay_post_install(sub_argc, sub_argv, &cfg);
+    } else if (strcmp(cmd, "rootfs") == 0 || strcmp(cmd, "configure") == 0 ||
+               strcmp(cmd, "cache") == 0 || strcmp(cmd, "image") == 0 || strcmp(cmd, "map") == 0) {
+        exit_code = axon_runtime_command(sub_argc, sub_argv, &cfg) == 0 ? 0 : 1;
     } else if (strcmp(cmd, "info") == 0) {
         exit_code = cmd_info(sub_argc, sub_argv, &cfg);
     } else {

@@ -82,7 +82,7 @@ int axon_arch_search_db(const char *db_path, const char *repo_name, const char *
 
 static const char *get_arch_sync_dir(const axon_config_t *cfg) {
     const char *env_dir = getenv("AXON_SYNC_PATH");
-    if (env_dir && strlen(env_dir) > 0) {
+    if (!cfg && env_dir && strlen(env_dir) > 0) {
         struct stat st;
         if (stat(env_dir, &st) == 0 && S_ISDIR(st.st_mode)) {
             return env_dir;
@@ -102,6 +102,8 @@ static const char *get_arch_sync_dir(const axon_config_t *cfg) {
             return cfg->arch_sync_path;
         }
     }
+
+    if (cfg && cfg->root_dir && strcmp(cfg->root_dir, "/") != 0) return NULL;
 
     /* Standard pacman sync fallback */
     const char *default_pacman = "/var/lib/pacman/sync";

@@ -3,6 +3,7 @@
 #include "axon/dependency.h"
 #include "axon/transaction.h"
 #include "axon/database.h"
+#include "axon/lifecycle.h"
 #include "axon/color.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,12 +13,21 @@
 int cmd_get(int argc, char **argv, const axon_config_t *cfg) {
     axon_config_t local_cfg = *cfg;
     bool keep_cache = false;
+    const char *assumed[1024];
+    size_t target_count = 0;
+    local_cfg.assume_installed = assumed;
+    local_cfg.assume_installed_count = 0;
 
+    bool no_scriptlets = false, no_hooks = false;
     bool overwrite = false;
     bool noconfirm = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            printf("    --no-scriptlets            skip package install scripts (empty-root bootstrap)\n"
+                   "    --no-hooks                 skip transaction hooks\n");
+            printf("    --needed                  skip installed packages (also the default)\n"
+                   "    --assume-installed <name>  satisfy a bare dependency without installing it; repeatable\n");
             if (cfg->color) {
                 printf("%susage:%s  %saxon get%s [%soptions%s] %s<package...>%s\n\n",
                        ANSI_BOLD, ANSI_RESET, ANSI_BOLD_CYAN, ANSI_RESET, ANSI_YELLOW, ANSI_RESET, ANSI_BOLD_WHITE, ANSI_RESET);
@@ -43,6 +53,20 @@ int cmd_get(int argc, char **argv, const axon_config_t *cfg) {
             return 0;
         } else if (strcmp(argv[i], "-y") == 0 || strcmp(argv[i], "--noconfirm") == 0) {
             noconfirm = true;
+        } else if (strcmp(argv[i], "--no-scriptlets") == 0) {
+            no_scriptlets = true;
+        } else if (strcmp(argv[i], "--no-hooks") == 0) {
+            no_hooks = true;
+        } else if (strcmp(argv[i], "--needed") == 0) {
+            /* Installed packages are already skipped by the resolver. */
+        } else if (strcmp(argv[i], "--assume-installed") == 0) {
+            if (i + 1 >= argc || !*argv[i + 1] ||
+                strspn(argv[i + 1], "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@._+-") != strlen(argv[i + 1]) ||
+                argv[i + 1][0] == '-' || local_cfg.assume_installed_count == 1024) {
+                fprintf(stderr, "error: --assume-installed requires a bare package name (no version constraint)\n");
+                return 1;
+            }
+            assumed[local_cfg.assume_installed_count++] = argv[++i];
         } else if (strcmp(argv[i], "--overwrite") == 0) {
             overwrite = true;
         } else if (strcmp(argv[i], "--keep-cache") == 0) {
@@ -53,10 +77,18 @@ int cmd_get(int argc, char **argv, const axon_config_t *cfg) {
             local_cfg.root_dir = argv[++i];
         } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
             local_cfg.verbose = true;
+        } else if (strcmp(argv[i], "--color") == 0 || strcmp(argv[i], "--color=always") == 0 ||
+                   strcmp(argv[i], "--no-color") == 0 || strcmp(argv[i], "--color=never") == 0) {
+            /* main already applied these display options. */
+        } else if (argv[i][0] == '-') {
+            fprintf(stderr, "error: unknown or incomplete get option: %s\n", argv[i]);
+            return 1;
+        } else {
+            target_count++;
         }
     }
 
-    if (argc < 2) {
+    if (target_count == 0) {
         if (cfg->color) {
             fprintf(stderr, "%serror:%s %sno targets specified (use -h for help)%s\n",
                     ANSI_BOLD_RED, ANSI_RESET, ANSI_BOLD, ANSI_RESET);
@@ -87,7 +119,7 @@ int cmd_get(int argc, char **argv, const axon_config_t *cfg) {
     for (int i = 1; i < argc; i++) {
         const char *pkgname = argv[i];
         if (pkgname[0] == '-') {
-            if ((strcmp(pkgname, "--cache-dir") == 0 || strcmp(pkgname, "--root") == 0) && i + 1 < argc) {
+            if ((strcmp(pkgname, "--cache-dir") == 0 || strcmp(pkgname, "--root") == 0 || strcmp(pkgname, "--assume-installed") == 0) && i + 1 < argc) {
                 i++;
             }
             continue;
@@ -105,7 +137,7 @@ int cmd_get(int argc, char **argv, const axon_config_t *cfg) {
             continue;
         }
 
-        if (axon_db_is_installed(&local_cfg, pkgname)) {
+        if (axon_dependency_installed(&local_cfg, pkgname)) {
             if (cfg->color) {
                 printf("%swarning:%s package '%s%s%s' is already installed\n",
                        ANSI_BOLD_YELLOW, ANSI_RESET, ANSI_BOLD_WHITE, pkgname, ANSI_RESET);
@@ -132,6 +164,13 @@ int cmd_get(int argc, char **argv, const axon_config_t *cfg) {
             }
             overall_status = 1;
         }
+    }
+
+    if (overall_status != 0) {
+        fprintf(stderr, "error: dependency resolution failed; installation aborted before downloading\n");
+        axon_pkg_list_free(to_install);
+        axon_repo_mgr_free(&mgr);
+        return 1;
     }
 
     if (to_install->count == 0) {
@@ -295,7 +334,8 @@ int cmd_get(int argc, char **argv, const axon_config_t *cfg) {
 
             char **conflicts = NULL;
             size_t conflict_count = 0;
-            axon_archive_check_conflicts(downloaded_paths[i], local_cfg.root_dir, pkg->name, &local_cfg, &conflicts, &conflict_count);
+            if (axon_archive_check_conflicts(downloaded_paths[i], local_cfg.root_dir, pkg->name, &local_cfg, &conflicts, &conflict_count) != 0)
+                has_conflicts = true;
             if (conflict_count > 0) {
                 has_conflicts = true;
                 if (cfg->color) {
@@ -338,6 +378,12 @@ int cmd_get(int argc, char **argv, const axon_config_t *cfg) {
         }
     }
 
+    char *hook_manifest = NULL;
+    if (!no_hooks && axon_hooks(&local_cfg, to_install, downloaded_paths, "PreTransaction", &hook_manifest) != 0) {
+        overall_status = 1;
+        goto finish_transaction;
+    }
+
     /* Phase 3: Extract, install, and record in local database */
     for (size_t i = 0; i < to_install->count; i++) {
         axon_package_t *pkg = to_install->packages[i];
@@ -353,6 +399,10 @@ int cmd_get(int argc, char **argv, const axon_config_t *cfg) {
             printf(":: Extracting %s to %s...\n", pkg->name, local_cfg.root_dir);
         }
 
+        if (!no_scriptlets && axon_scriptlet(&local_cfg, archive_path, pkg, "pre_install") != 0) {
+            overall_status = 1;
+            goto finish_transaction;
+        }
         char **installed_files = NULL;
         size_t file_count = 0;
         int erc = axon_archive_extract_pkg(archive_path, local_cfg.root_dir, &installed_files, &file_count);
@@ -366,27 +416,24 @@ int cmd_get(int argc, char **argv, const axon_config_t *cfg) {
             if (!keep_cache) {
                 unlink(archive_path);
             }
+            for (size_t f = 0; f < file_count; f++) free(installed_files[f]);
+            free(installed_files);
             overall_status = 1;
-            continue;
+            goto finish_transaction;
         }
 
-        /* Record installation in local database */
-        axon_db_record_install(&local_cfg, pkg, (const char **)installed_files, file_count);
+        /* Never report success if package metadata could not be recorded. */
+        int record_rc = axon_db_record_install(&local_cfg, pkg, (const char **)installed_files, file_count);
 
         for (size_t f = 0; f < file_count; f++) {
             free(installed_files[f]);
         }
         free(installed_files);
 
-        /* Remove downloaded archive */
-        if (!keep_cache) {
-            if (cfg->color) {
-                printf("%s::%s Removing downloaded archive %s%s%s...\n",
-                       ANSI_BOLD_BLUE, ANSI_RESET, ANSI_DIM, archive_path, ANSI_RESET);
-            } else {
-                printf(":: Removing downloaded archive %s...\n", archive_path);
-            }
-            unlink(archive_path);
+        if (record_rc != 0 || (!no_scriptlets && axon_scriptlet(&local_cfg, archive_path, pkg, "post_install") != 0)) {
+            fprintf(stderr, "error: incomplete installation of %s; files may already be present\n", pkg->name);
+            overall_status = 1;
+            goto finish_transaction;
         }
 
         if (cfg->color) {
@@ -399,7 +446,13 @@ int cmd_get(int argc, char **argv, const axon_config_t *cfg) {
         }
     }
 
+    if (!no_hooks && axon_hooks(&local_cfg, to_install, downloaded_paths, "PostTransaction", &hook_manifest) != 0)
+        overall_status = 1;
+
+finish_transaction:
+    if (hook_manifest) { unlink(hook_manifest); free(hook_manifest); }
     for (size_t i = 0; i < to_install->count; i++) {
+        if (!keep_cache && downloaded_paths[i]) unlink(downloaded_paths[i]);
         free(downloaded_paths[i]);
     }
     free(downloaded_paths);

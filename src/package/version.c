@@ -133,10 +133,6 @@ int axon_version_cmp(const char *ver1, const char *ver2) {
 
     if (rel1 && rel2) {
         return rpmvercmp(rel1, rel2);
-    } else if (rel1) {
-        return 1;
-    } else if (rel2) {
-        return -1;
     }
 
     return 0;

@@ -24,6 +24,8 @@ typedef struct {
     char *mirrorlist_path;
     bool color;
     bool verbose;
+    const char **assume_installed; /* Borrowed bare dependency names, command lifetime. */
+    size_t assume_installed_count;
     axon_repo_entry_t *repos;
     size_t repo_count;
 } axon_config_t;
@@ -31,6 +33,8 @@ typedef struct {
 int axon_config_init(axon_config_t *cfg);
 int axon_config_load(axon_config_t *cfg, const char *path);
 int axon_config_add_repo(axon_config_t *cfg, const char *name, const char *url, bool is_arch, int priority);
+/* Requires an existing root; redirects all package state below its canonical path. */
+int axon_config_set_root(axon_config_t *cfg, const char *root);
 void axon_config_free(axon_config_t *cfg);
 
 #ifdef __cplusplus

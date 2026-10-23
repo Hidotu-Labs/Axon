@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #endif
 #include "axon/database.h"
+#include "axon/repository.h"
 #include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,8 +15,7 @@ int axon_db_init(const axon_config_t *cfg) {
     if (!cfg || !cfg->db_path) return -1;
     char path[512];
     snprintf(path, sizeof(path), "%s/local", cfg->db_path);
-    mkdir(cfg->db_path, 0755);
-    mkdir(path, 0755);
+    if (axon_mkdir_p(path, 0755) != 0) return -1;
     return 0;
 }
 
@@ -130,24 +130,6 @@ static void get_pacman_local_dir(const axon_config_t *cfg, char *out_buf, size_t
     }
 }
 
-static const char *get_local_db_dir(const axon_config_t *cfg, char *out_buf, size_t out_len) {
-    /* Check axon local db first */
-    if (cfg && cfg->db_path) {
-        snprintf(out_buf, out_len, "%s/local", cfg->db_path);
-        struct stat st;
-        if (stat(out_buf, &st) == 0 && S_ISDIR(st.st_mode)) {
-            return out_buf;
-        }
-    }
-    /* Fallback to pacman local db if on arch-based system */
-    get_pacman_local_dir(cfg, out_buf, out_len);
-    struct stat st;
-    if (stat(out_buf, &st) == 0 && S_ISDIR(st.st_mode)) {
-        return out_buf;
-    }
-    return NULL;
-}
-
 bool axon_db_is_installed(const axon_config_t *cfg, const char *pkgname) {
     if (!pkgname) return false;
 
@@ -201,10 +183,8 @@ axon_package_t *axon_db_get_installed(const axon_config_t *cfg, const char *pkgn
     return dir_get_package(pacman_local, pkgname);
 }
 
-int axon_db_list_installed(const axon_config_t *cfg, axon_pkg_list_t *list) {
+static int list_installed_dir(const char *db_dir, axon_pkg_list_t *list) {
     if (!list) return -1;
-    char db_dir[512];
-    if (!get_local_db_dir(cfg, db_dir, sizeof(db_dir))) return -1;
 
     DIR *dir = opendir(db_dir);
     if (!dir) return -1;
@@ -239,22 +219,41 @@ int axon_db_list_installed(const axon_config_t *cfg, axon_pkg_list_t *list) {
     return 0;
 }
 
+int axon_db_list_installed(const axon_config_t *cfg, axon_pkg_list_t *list) {
+    if (!cfg || !list) return -1;
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/local", cfg->db_path);
+    int a = list_installed_dir(path, list);
+    get_pacman_local_dir(cfg, path, sizeof(path));
+    axon_pkg_list_t *pacman = axon_pkg_list_new();
+    if (!pacman) return -1;
+    int b = list_installed_dir(path, pacman);
+    for (size_t i = 0; i < pacman->count; i++) {
+        bool duplicate = false;
+        for (size_t j = 0; j < list->count; j++)
+            if (!strcmp(list->packages[j]->name, pacman->packages[i]->name)) duplicate = true;
+        if (!duplicate) axon_pkg_list_add(list, axon_package_clone(pacman->packages[i]));
+    }
+    axon_pkg_list_free(pacman);
+    return a == 0 || b == 0 ? 0 : -1;
+}
+
 int axon_db_record_install(const axon_config_t *cfg, const axon_package_t *pkg, const char **files, size_t file_count) {
     if (!cfg || !cfg->db_path || !pkg || !pkg->name || !pkg->version) return -1;
 
     char local_dir[512];
     snprintf(local_dir, sizeof(local_dir), "%s/local", cfg->db_path);
-    mkdir(cfg->db_path, 0755);
-    mkdir(local_dir, 0755);
+    if (axon_mkdir_p(local_dir, 0755) != 0) return -1;
 
     char pkg_dir[768];
     snprintf(pkg_dir, sizeof(pkg_dir), "%s/%s-%s", local_dir, pkg->name, pkg->version);
-    mkdir(pkg_dir, 0755);
+    if (axon_mkdir_p(pkg_dir, 0755) != 0) return -1;
 
     /* Write desc file */
     char desc_file[1024];
     snprintf(desc_file, sizeof(desc_file), "%s/desc", pkg_dir);
     FILE *fp = fopen(desc_file, "w");
+    if (!fp) return -1;
     if (fp) {
         fprintf(fp, "%%NAME%%\n%s\n\n", pkg->name);
         fprintf(fp, "%%VERSION%%\n%s\n\n", pkg->version);
@@ -284,13 +283,20 @@ int axon_db_record_install(const axon_config_t *cfg, const axon_package_t *pkg, 
             fprintf(fp, "\n");
         }
 
-        fclose(fp);
+        if (pkg->provides_count) {
+            fprintf(fp, "%%PROVIDES%%\n");
+            for (size_t i = 0; i < pkg->provides_count; i++) fprintf(fp, "%s\n", pkg->provides[i]);
+            fprintf(fp, "\n");
+        }
+        int write_error = ferror(fp);
+        if (fclose(fp) != 0 || write_error) return -1;
     }
 
     /* Write files file */
     char files_file[1024];
     snprintf(files_file, sizeof(files_file), "%s/files", pkg_dir);
     FILE *ffp = fopen(files_file, "w");
+    if (!ffp) return -1;
     if (ffp) {
         fprintf(ffp, "%%FILES%%\n");
         for (size_t i = 0; i < file_count; i++) {
@@ -298,7 +304,8 @@ int axon_db_record_install(const axon_config_t *cfg, const axon_package_t *pkg, 
                 fprintf(ffp, "%s\n", files[i]);
             }
         }
-        fclose(ffp);
+        int write_error = ferror(ffp);
+        if (fclose(ffp) != 0 || write_error) return -1;
     }
 
     return 0;

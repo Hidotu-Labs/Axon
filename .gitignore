@@ -16,3 +16,10 @@ tests/*.o
 
 # Package archives
 *.tar.gz
+
+# Generated compiler dependency files
+*.d
+
+/tests/test_dependency
+__pycache__/
+*.pyc

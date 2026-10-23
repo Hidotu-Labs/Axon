@@ -8,6 +8,9 @@
 extern "C" {
 #endif
 
+bool axon_package_satisfies(const axon_package_t *pkg, const char *dependency);
+bool axon_dependency_installed(const axon_config_t *cfg, const char *dependency);
+
 /* Resolves dependency tree for a package into resolution_order */
 int axon_resolve_deps(axon_repo_mgr_t *mgr, const char *pkgname, axon_pkg_list_t *resolution_order);
 

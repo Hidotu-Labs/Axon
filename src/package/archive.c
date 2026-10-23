@@ -278,7 +278,8 @@ int axon_archive_extract_pkg(const char *archive_path, const char *dest_dir, cha
 
         r = archive_write_header(ext, entry);
         if (r < ARCHIVE_OK) {
-            fprintf(stderr, "Warning archive_write_header: %s\n", archive_error_string(ext));
+            fprintf(stderr, "error: archive_write_header: %s\n", archive_error_string(ext));
+            break;
         } else if (archive_entry_size(entry) > 0) {
             const void *buff;
             size_t size;
@@ -286,12 +287,14 @@ int axon_archive_extract_pkg(const char *archive_path, const char *dest_dir, cha
 
             while ((r = archive_read_data_block(a, &buff, &size, &offset)) == ARCHIVE_OK) {
                 if (archive_write_data_block(ext, buff, size, offset) < ARCHIVE_OK) {
-                    fprintf(stderr, "Warning archive_write_data_block: %s\n", archive_error_string(ext));
+                    fprintf(stderr, "error: archive_write_data_block: %s\n", archive_error_string(ext));
+                    r = ARCHIVE_FATAL;
                     break;
                 }
             }
         }
-        archive_write_finish_entry(ext);
+        if (r < ARCHIVE_OK && r != ARCHIVE_EOF) break;
+        if (archive_write_finish_entry(ext) < ARCHIVE_OK) { r = ARCHIVE_FATAL; break; }
     }
 
     archive_read_close(a);

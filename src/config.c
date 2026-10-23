@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 static char *normalize_repo_url(const char *url) {
     if (!url) return NULL;
@@ -174,6 +175,36 @@ int axon_config_load(axon_config_t *cfg, const char *path) {
     }
 
     fclose(fp);
+    return 0;
+}
+
+int axon_config_set_root(axon_config_t *cfg, const char *root) {
+    if (!cfg || !root || !*root) return -1;
+    char *canonical = realpath(root, NULL);
+    if (!canonical) return -1;
+    struct stat st;
+    if (stat(canonical, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        free(canonical);
+        return -1;
+    }
+    const char *suffixes[] = { "/var/lib/axon", "/var/cache/axon/pkg",
+                               "/var/lib/axon/sync", "/var/lib/pacman/sync" };
+    char *paths[4] = {0};
+    for (size_t i = 0; i < 4; i++) {
+        size_t size = strlen(canonical) + strlen(suffixes[i]) + 1;
+        paths[i] = malloc(size);
+        if (!paths[i]) {
+            for (size_t j = 0; j < i; j++) free(paths[j]);
+            free(canonical);
+            return -1;
+        }
+        snprintf(paths[i], size, "%s%s", strcmp(canonical, "/") == 0 ? "" : canonical, suffixes[i]);
+    }
+    free(cfg->root_dir); cfg->root_dir = canonical;
+    free(cfg->db_path); cfg->db_path = paths[0];
+    free(cfg->cache_path); cfg->cache_path = paths[1];
+    free(cfg->sync_path); cfg->sync_path = paths[2];
+    free(cfg->arch_sync_path); cfg->arch_sync_path = paths[3];
     return 0;
 }
 
