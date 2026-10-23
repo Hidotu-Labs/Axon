@@ -146,7 +146,6 @@ def hooks(args):
         for hook in target_path(args.root, directory).glob('*.hook'):
             candidates[hook.name] = hook
     known = installed_names(args.root, args.db_path)
-    failed = False
     for name, hook in sorted(candidates.items()):
         # Higher-priority /dev/null symlinks disable a packaged hook.
         if hook.is_symlink() and os.readlink(hook) == '/dev/null':
@@ -171,9 +170,10 @@ def hooks(args):
             print(f'error: hook {name} failed ({rc})', file=sys.stderr)
             if args.phase == 'PreTransaction' and 'AbortOnFail' in action:
                 return 1
-            failed = True
-    # Non-aborting pre hooks report failures but permit the transaction.
-    return int(failed and args.phase == 'PostTransaction')
+    # Only pre-transaction hooks marked AbortOnFail can cancel a transaction.
+    # Post-transaction hook failures are reported after packages are committed
+    # and cannot roll back the installation.
+    return 0
 
 
 def regenerate_caches(root):
