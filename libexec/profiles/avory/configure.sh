@@ -24,7 +24,7 @@ if [ -f "${ROOTFS_DIR}/usr/bin/vlc" ]; then
         # This exact Arch launcher tests geteuid() and branches to its
         # root refusal at 0x108d. Reject other builds before modifying files.
         vlc_digest=$(sha256sum "${vlc_source}")
-        if [ "${vlc_digest%% *}" != "8e08d98bb6107ab211e87fdad3cee7dc5dc37497a58529a77ab14d263d9bd521" ]; then
+        if [ "${vlc_digest%% *}" != "8a57e862d18a15b6eb68f5a1f07f3e5cbd75c09f6b52270bc2653049e5d7d5c6" ]; then
             echo "Unrecognized VLC launcher; inspect its root check before updating this patch" >&2
             exit 1
         fi

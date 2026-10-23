@@ -524,6 +524,13 @@ int axon_repo_sync_all(axon_repo_mgr_t *mgr) {
     return overall_status;
 }
 
+static bool package_archive_size_matches(const char *path, size_t expected_size) {
+    if (expected_size == 0) return true;
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISREG(st.st_mode) &&
+           (size_t)st.st_size == expected_size;
+}
+
 int axon_repo_download_pkg(axon_repo_mgr_t *mgr, const axon_package_t *pkg, const char *dest_dir, char **out_filepath) {
     if (!mgr || !mgr->cfg || !pkg || !dest_dir) return -1;
     const axon_config_t *cfg = mgr->cfg;
@@ -577,16 +584,21 @@ int axon_repo_download_pkg(axon_repo_mgr_t *mgr, const axon_package_t *pkg, cons
     }
 
     /* Direct URL download (Custom / GitHub repositories) */
-    if (pkg->url && (strncmp(pkg->url, "http://", 7) == 0 || strncmp(pkg->url, "https://", 8) == 0)) {
+    if (!pkg->is_arch && pkg->url && (strncmp(pkg->url, "http://", 7) == 0 || strncmp(pkg->url, "https://", 8) == 0)) {
         if (cfg->verbose) {
             printf("   Downloading from direct URL %s\n", pkg->url);
         }
         int rc = axon_download_file(pkg->url, dest_file, filename, true, color);
-        if (rc == 0) {
+        if (rc == 0 && package_archive_size_matches(dest_file, pkg->csize)) {
             if (out_filepath) {
                 *out_filepath = strdup(dest_file);
             }
             return 0;
+        }
+        if (rc == 0) {
+            fprintf(stderr, "error: downloaded package %s has an unexpected size\n",
+                    filename);
+            remove(dest_file);
         }
         return -1;
     }
@@ -653,8 +665,13 @@ int axon_repo_download_pkg(axon_repo_mgr_t *mgr, const axon_package_t *pkg, cons
 
         int rc = axon_download_file(pkg_url, dest_file, filename, true, color);
         if (rc == 0) {
-            success = true;
-            break;
+            if (package_archive_size_matches(dest_file, pkg->csize)) {
+                success = true;
+                break;
+            }
+            fprintf(stderr, "error: downloaded package %s has an unexpected size; trying next mirror\n",
+                    filename);
+            remove(dest_file);
         } else if (rc == -2) {
             break;
         }

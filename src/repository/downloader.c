@@ -111,16 +111,42 @@ static size_t write_file_cb(void *ptr, size_t size, size_t nmemb, void *stream) 
 int axon_download_file(const char *url, const char *dest_path, const char *display_name, bool show_progress, bool color) {
     if (!url || !dest_path) return -1;
 
-    char part_path[600];
-    snprintf(part_path, sizeof(part_path), "%s.part", dest_path);
+    char part_path[2048];
+    int part_path_len = snprintf(part_path, sizeof(part_path), "%s.part.XXXXXX", dest_path);
+    if (part_path_len < 0 || (size_t)part_path_len >= sizeof(part_path)) {
+        errno = ENAMETOOLONG;
+        if (color) {
+            fprintf(stderr, "  %serror:%s temporary download path is too long\n",
+                    ANSI_BOLD_RED, ANSI_RESET);
+        } else {
+            fprintf(stderr, "  error: temporary download path is too long\n");
+        }
+        return -2;
+    }
 
-    FILE *fp = fopen(part_path, "wb");
-    if (!fp) {
+    int part_fd = mkstemp(part_path);
+    if (part_fd < 0) {
         if (color) {
             fprintf(stderr, "  %serror:%s failed to create '%s%s%s': %s\n",
                     ANSI_BOLD_RED, ANSI_RESET, ANSI_BOLD_WHITE, part_path, ANSI_RESET, strerror(errno));
         } else {
             fprintf(stderr, "  error: failed to create '%s': %s\n", part_path, strerror(errno));
+        }
+        return -2;
+    }
+
+    FILE *fp = fdopen(part_fd, "wb");
+    if (!fp) {
+        int saved_errno = errno;
+        close(part_fd);
+        remove(part_path);
+        errno = saved_errno;
+        if (color) {
+            fprintf(stderr, "  %serror:%s failed to open temporary download '%s%s%s': %s\n",
+                    ANSI_BOLD_RED, ANSI_RESET, ANSI_BOLD_WHITE, part_path, ANSI_RESET, strerror(errno));
+        } else {
+            fprintf(stderr, "  error: failed to open temporary download '%s': %s\n",
+                    part_path, strerror(errno));
         }
         return -2;
     }
@@ -172,7 +198,7 @@ int axon_download_file(const char *url, const char *dest_path, const char *displ
         return -1;
     }
 
-    /* Atomically rename part to target */
+    /* Atomically publish the uniquely named temporary download. */
     if (rename(part_path, dest_path) != 0) {
         if (color) {
             fprintf(stderr, "  %serror:%s failed to finalize '%s%s%s': %s\n",
