@@ -150,7 +150,7 @@ arch_name() {
         exo-libs) echo exo;;
         # wallpaper pkg
         plasma-workspace-wallpapers) echo plasma-workspace-wallpapers;;
-        plasma-workspace-x11) echo plasma-x11-session;;
+        plasma-workspace-x11) echo DROP;; # Arch no longer ships a separate Plasma X11 session
         # misc KDE
         kglobalacceld) echo kglobalaccel;;
         kirigami-libs) echo kirigami;;

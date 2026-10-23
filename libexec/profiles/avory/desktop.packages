@@ -325,7 +325,6 @@ libseat-dev
 vulkan-loader-dev
 mesa-dev
 mesa
-xfce4
 xfce4-session
 xfwm4
 xfdesktop

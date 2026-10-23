@@ -274,6 +274,26 @@ int axon_archive_extract_pkg(const char *archive_path, const char *dest_dir, cha
             }
         }
 
+        /* Package hardlink targets are archive-root-relative. Rebase them
+         * under dest_dir because archive_write_disk resolves link paths on
+         * the host filesystem.
+         */
+        const char *hardlink_path = archive_entry_hardlink(entry);
+        if (hardlink_path) {
+            while (*hardlink_path == '/' ||
+                   (*hardlink_path == '.' && *(hardlink_path + 1) == '/')) {
+                hardlink_path++;
+            }
+            char hardlink_target[4096];
+            if (strcmp(dest_dir, "/") == 0) {
+                snprintf(hardlink_target, sizeof(hardlink_target), "/%s", hardlink_path);
+            } else {
+                snprintf(hardlink_target, sizeof(hardlink_target), "%s/%s",
+                         dest_dir, hardlink_path);
+            }
+            archive_entry_set_hardlink(entry, hardlink_target);
+        }
+
         archive_entry_set_pathname(entry, target_path);
 
         r = archive_write_header(ext, entry);

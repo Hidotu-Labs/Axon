@@ -19,23 +19,12 @@ int axon_db_init(const axon_config_t *cfg) {
     return 0;
 }
 
+static axon_package_t *dir_get_package(const char *dir_path, const char *pkgname);
+
 static bool dir_has_package(const char *dir_path, const char *pkgname) {
-    if (!dir_path || !pkgname) return false;
-    DIR *dir = opendir(dir_path);
-    if (!dir) return false;
-
-    bool found = false;
-    struct dirent *de;
-    size_t name_len = strlen(pkgname);
-
-    while ((de = readdir(dir)) != NULL) {
-        if (strncmp(de->d_name, pkgname, name_len) == 0 && de->d_name[name_len] == '-') {
-            found = true;
-            break;
-        }
-    }
-
-    closedir(dir);
+    axon_package_t *pkg = dir_get_package(dir_path, pkgname);
+    bool found = pkg != NULL;
+    axon_package_free(pkg);
     return found;
 }
 
@@ -93,29 +82,40 @@ static axon_package_t *dir_get_package(const char *dir_path, const char *pkgname
     size_t name_len = strlen(pkgname);
 
     while ((de = readdir(dir)) != NULL) {
-        if (strncmp(de->d_name, pkgname, name_len) == 0 && de->d_name[name_len] == '-') {
-            char desc_path[1024];
-            snprintf(desc_path, sizeof(desc_path), "%s/%s/desc", dir_path, de->d_name);
-            FILE *fp = fopen(desc_path, "r");
-            if (fp) {
-                fseek(fp, 0, SEEK_END);
-                long sz = ftell(fp);
-                fseek(fp, 0, SEEK_SET);
-                char *buf = malloc(sz + 1);
-                if (buf) {
-                    size_t read_bytes = fread(buf, 1, sz, fp);
-                    buf[read_bytes] = '\0';
-                    pkg = axon_package_new();
-                    if (pkg) {
-                        axon_package_parse_desc(pkg, buf);
-                        pkg->repo = strdup("local");
-                    }
-                    free(buf);
-                }
-                fclose(fp);
-            }
-            break;
+        if (strncmp(de->d_name, pkgname, name_len) != 0 || de->d_name[name_len] != '-') continue;
+
+        char desc_path[1024];
+        snprintf(desc_path, sizeof(desc_path), "%s/%s/desc", dir_path, de->d_name);
+        FILE *fp = fopen(desc_path, "r");
+        if (!fp) continue;
+
+        if (fseek(fp, 0, SEEK_END) != 0) {
+            fclose(fp);
+            continue;
         }
+        long sz = ftell(fp);
+        if (sz < 0 || fseek(fp, 0, SEEK_SET) != 0) {
+            fclose(fp);
+            continue;
+        }
+        char *buf = malloc((size_t)sz + 1);
+        if (buf) {
+            size_t read_bytes = fread(buf, 1, (size_t)sz, fp);
+            buf[read_bytes] = '\0';
+            axon_package_t *candidate = axon_package_new();
+            if (candidate && axon_package_parse_desc(candidate, buf) == 0 &&
+                candidate->name && strcmp(candidate->name, pkgname) == 0) {
+                /* Match the exact package name from its local metadata. */
+                candidate->repo = strdup("local");
+                if (candidate->repo) pkg = candidate;
+                else axon_package_free(candidate);
+            } else {
+                axon_package_free(candidate);
+            }
+            free(buf);
+        }
+        fclose(fp);
+        if (pkg) break;
     }
 
     closedir(dir);
