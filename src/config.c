@@ -66,7 +66,7 @@ int axon_config_init(axon_config_t *cfg) {
     cfg->root_dir = strdup(env_root && *env_root ? env_root : "/");
 
     const char *env_db = getenv("AXON_DB_PATH");
-    cfg->db_path = strdup(env_db && *env_db ? env_db : "/var/lib/axon");
+    cfg->db_path = strdup(env_db && *env_db ? env_db : "/var/lib/pacman");
 
     const char *env_cache = getenv("AXON_CACHE_PATH");
     cfg->cache_path = strdup(env_cache && *env_cache ? env_cache : "/var/cache/axon/pkg");
@@ -77,7 +77,7 @@ int axon_config_init(axon_config_t *cfg) {
     cfg->arch_sync_path = strdup("/var/lib/pacman/sync");
 
     const char *env_mirror = getenv("AXON_MIRRORLIST");
-    cfg->mirrorlist_path = strdup(env_mirror && *env_mirror ? env_mirror : "/etc/axon/mirrorlist");
+    cfg->mirrorlist_path = strdup(env_mirror && *env_mirror ? env_mirror : "/etc/pacman.d/mirrorlist");
 
     cfg->color = isatty(STDOUT_FILENO);
     cfg->verbose = false;
@@ -187,7 +187,7 @@ int axon_config_set_root(axon_config_t *cfg, const char *root) {
         free(canonical);
         return -1;
     }
-    const char *suffixes[] = { "/var/lib/axon", "/var/cache/axon/pkg",
+    const char *suffixes[] = { "/var/lib/pacman", "/var/cache/axon/pkg",
                                "/var/lib/axon/sync", "/var/lib/pacman/sync" };
     char *paths[4] = {0};
     for (size_t i = 0; i < 4; i++) {

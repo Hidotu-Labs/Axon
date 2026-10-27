@@ -29,8 +29,8 @@ See the LICENSE file for details.
 ## Building a target root filesystem
 
 The target directory must exist. State options can appear before or after the
-operation. `--root` resolves symlinks and puts the Axon database, archive cache,
-sync database and pacman fallback database under that root. Explicit
+operation. `--root` resolves symlinks and puts the unified local database (`var/lib/pacman`),
+archive cache, sync database and pacman fallback database under that root. Explicit
 `--db-path`, `--cache-dir` and `--sync-dir` paths override those defaults,
 regardless of option order. The mirrorlist is still host configuration.
 
@@ -48,10 +48,8 @@ Versioned exceptions are rejected. Any target resolution failure aborts the
 whole request before downloads or extraction. This does not provide rollback
 for extraction failures.
 
-Installation scripts, install hooks, versioned dependencies, the migrated AvoryOS
-desktop profile, cache regeneration and filesystem image creation are now
-available. See [rootfs and installation support](docs/rootfs.md) for commands,
-host requirements, bootstrap behavior and current limitations.
+Installation scripts, install hooks, versioned dependencies, cache regeneration, and
+native ALPM/Pacman database interoperability are built directly into the standalone binary.
 
 Run `make test-bootstrap` for offline target-root regression checks, or
-`make test` for all tests, including target execution and real image creation.
+`make test` for all tests including package lifecycle and pacman interoperability.

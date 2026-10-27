@@ -12,9 +12,6 @@ import unittest
 
 REPO = Path(__file__).resolve().parents[1]
 AXON = REPO / 'axon'
-spec = importlib.util.spec_from_file_location('axon_runtime', REPO / 'libexec/axon-runtime.py')
-runtime = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(runtime)
 
 
 class SystemTests(unittest.TestCase):
@@ -106,7 +103,7 @@ post_install() { printf 'post:%s\\n' "$1" >> /events; }
         self.package('lifecycle-app', {'usr/share/no-write': 'no'})
         self.run_axon('get', '--noconfirm', 'lifecycle-app', success=False)
         self.assertFalse((self.root / 'usr/share/no-write').exists())
-        self.assertFalse((self.root / 'var/lib/axon/local/lifecycle-app-1.0').exists())
+        self.assertFalse((self.root / 'var/lib/pacman/local/lifecycle-app-1.0').exists())
 
     def test_scriptlet_failure_propagates(self):
         self.shell()
@@ -122,7 +119,7 @@ post_install() { printf 'post:%s\\n' "$1" >> /events; }
         self.assertTrue((self.root / 'usr/share/installed-despite-post-failure').exists())
 
     def test_incompatible_installed_dependency_fails_before_download(self):
-        self.write('var/lib/axon/local/library-1.0/desc', '%NAME%\nlibrary\n\n%VERSION%\n1.0\n')
+        self.write('var/lib/pacman/local/library-1.0/desc', '%NAME%\nlibrary\n\n%VERSION%\n1.0\n')
         self.package('requires-new', {'usr/share/should-not-exist': 'no'}, depends='library>=2')
         result = self.run_axon('get', '--noconfirm', 'requires-new', success=False)
         self.assertIn('does not satisfy library>=2', result.stderr)
@@ -140,7 +137,7 @@ post_install() { printf 'post:%s\\n' "$1" >> /events; }
         self.run_axon('get', '--noconfirm', 'cycle-a')
 
     def test_versioned_installed_virtual_provider(self):
-        self.write('var/lib/axon/local/provider-1/desc', '%NAME%\nprovider\n\n%VERSION%\n1\n\n%PROVIDES%\nvirtual=2\n')
+        self.write('var/lib/pacman/local/provider-1/desc', '%NAME%\nprovider\n\n%VERSION%\n1\n\n%PROVIDES%\nvirtual=2\n')
         self.package('uses-virtual', {'usr/share/virtual-ok': 'ok'}, depends='virtual>=2')
         self.run_axon('get', '--noconfirm', 'uses-virtual')
         self.assertTrue((self.root / 'usr/share/virtual-ok').exists())
@@ -156,89 +153,35 @@ post_install() { printf 'post:%s\\n' "$1" >> /events; }
         self.assertIn('gtk-update-icon-cache -f -t /usr/share/icons/hicolor', events)
         self.assertIn('glib-compile-schemas /usr/share/glib-2.0/schemas', events)
 
-    def test_map_and_minimal_rootfs_command(self):
-        result = self.run_axon('map', 'qt6-qtbase', 'libpng-dev', 'openrc')
-        self.assertEqual(result.stdout.splitlines(), ['qt6-base', 'DROP', 'DROP'])
-        for name in ('filesystem', 'glibc', 'busybox', 'coreutils', 'sed', 'grep', 'gawk', 'tar', 'gzip', 'xz', 'util-linux', 'shadow'):
-            self.package(name)
-        self.shell()
-        self.package('bash', {'.INSTALL': 'post_install() { printf replayed > /bootstrap-replay; }\n'})
-        self.package('extra-payload', {'usr/share/rootfs-extra': 'ok'})
-        packages = self.base / 'packages.txt'
-        packages.write_text('extra-payload\n')
-        self.run_axon('rootfs', '--no-caches', '--packages-from', packages)
-        self.assertEqual((self.root / 'usr/share/rootfs-extra').read_text(), 'ok')
-        self.assertEqual((self.root / 'bootstrap-replay').read_text(), 'replayed')
-        self.assertTrue((self.root / 'etc/mtab').is_symlink())
-        self.assertEqual((self.root / 'tmp').stat().st_mode & 0o7777, 0o1777)
+    def test_pacman_interoperability_and_file_ownership(self):
+        # Create package with file
+        self.package('cjson-demo', {'usr/lib/libcjson.so.1': 'cjson-binary-data'}, version='1.7.18')
+        # Install via Axon
+        self.run_axon('get', '--noconfirm', '--keep-cache', 'cjson-demo')
+        target_file = self.root / 'usr/lib/libcjson.so.1'
+        self.assertTrue(target_file.exists())
+        self.assertEqual(target_file.read_text(), 'cjson-binary-data')
 
-    def test_image_contains_files_and_refuses_accidental_overwrite(self):
-        self.write('etc/passwd', 'root:x:0:0:root:/:/bin/bash\navory:x:1000:1000::/home/avory:/bin/bash\n')
-        self.write('home/avory/example', 'user content')
-        self.write('etc/test-payload', 'image data')
-        self.write('var/cache/axon/pkg/excluded.tar', 'cached archive')
-        image = self.base / 'rootfs.img'
-        self.run_axon('image', '--output', image, '--size', '32M')
-        content = subprocess.check_output(['debugfs', '-R', 'cat /etc/test-payload', str(image)], text=True, stderr=subprocess.DEVNULL)
-        self.assertEqual(content, 'image data')
-        cached = subprocess.check_output(['debugfs', '-R', 'cat /var/cache/axon/pkg/excluded.tar', str(image)], text=True, stderr=subprocess.DEVNULL)
-        self.assertEqual(cached, '')
-        self.assertTrue((self.root / 'var/cache/axon/pkg/excluded.tar').exists())
-        stat = subprocess.check_output(['debugfs', '-R', 'stat /etc/test-payload', str(image)], text=True, stderr=subprocess.DEVNULL)
-        self.assertRegex(stat, r'User:\s+0\s+Group:\s+0')
-        stat = subprocess.check_output(['debugfs', '-R', 'stat /home/avory/example', str(image)], text=True, stderr=subprocess.DEVNULL)
-        self.assertRegex(stat, r'User:\s+1000\s+Group:\s+1000')
-        self.run_axon('image', '--output', image, '--size', '32M', success=False)
-        self.run_axon('image', '--output', self.root / 'recursive.img', '--size', '32M', success=False)
-        self.assertFalse((self.root / 'recursive.img').exists())
+        # Pacman -Q query
+        pacman_q = subprocess.run(['pacman', '--root', str(self.root), '-Q', 'cjson-demo'],
+                                  capture_output=True, text=True)
+        self.assertEqual(pacman_q.returncode, 0, pacman_q.stderr)
+        self.assertIn('cjson-demo 1.7.18-1', pacman_q.stdout)
 
-    def test_desktop_profile_accounts_pam_and_session_settings(self):
-        self.shell()
-        source = self.base / 'avory-source'
-        assets = ['userland/avory-account', 'userland/test_accounts.sh', 'userland/avory-login.elf',
-                  'config/vlc/vlc.sh', 'config/xorg/10-modesetting.conf', 'config/xorg/10-native.conf',
-                  'config/xorg/10-nouveau.conf', 'config/xorg/20-output.conf', 'config/xorg/44-nouveau-env.sh',
-                  'config/xorg/45-prime-output.sh', 'config/xorg/avory-nouveau-xorg.sh',
-                  'config/xorg/avory-prime-display.sh', 'config/xorg/avory-xorg-profile.sh']
-        for asset in assets:
-            path = source / asset
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text('# fixture asset\n')
-        self.write('etc/passwd', 'root:x:0:0:root:/root:/bin/bash\n')
-        self.write('etc/group', 'root:x:0:\n')
-        self.write('etc/pacman.conf', '[options]\n')
-        self.write('etc/pacman.d/mirrorlist', '# no enabled mirrors\n')
-        self.write('usr/bin/startplasma-x11', '#!/bin/sh\nexit 0\n', 0o755)
-        # A real ELF fixture exercises the target loader check, without Qt packages.
-        plugin = self.root / 'usr/lib/qt6/plugins/platforms/libqxcb.so'
-        plugin.parent.mkdir(parents=True)
-        subprocess.run(['cc', '-shared', '-nostdlib', '-x', 'c', '-', '-o', str(plugin)],
-                       input='int fixture(void) { return 0; }', text=True, check=True)
-        loader = Path('/usr/lib/ld-linux-x86-64.so.2')
-        if not loader.exists():
-            loader = Path('/lib64/ld-linux-x86-64.so.2')
-        shutil.copy2(loader, self.root / 'usr/lib/ld-linux-x86-64.so.2')
-        # Repetition must preserve single account entries and working session wrappers.
-        for _ in range(2):
-            self.run_axon('configure', '--profile', 'desktop', '--source', source, '--no-caches')
-        passwd = (self.root / 'etc/passwd').read_text()
-        self.assertEqual(sum(row.startswith('avory:') for row in passwd.splitlines()), 1)
-        self.assertIn('root::0:0:root:/:', passwd)
-        self.assertIn('pam_permit.so', (self.root / 'etc/pam.d/sddm').read_text())
-        self.assertIn('DisplayServer=x11', (self.root / 'etc/sddm.conf').read_text())
-        self.assertIn('dbus-run-session', (self.root / 'usr/bin/startplasma-x11').read_text())
-        self.assertTrue((self.root / 'etc/init.d/rcS').is_file())
-        self.assertEqual(os.readlink(self.root / 'etc/mtab'), '/proc/self/mounts')
+        # Pacman -Qo file ownership query
+        pacman_qo = subprocess.run(['pacman', '--root', str(self.root), '-Qo', str(target_file)],
+                                   capture_output=True, text=True)
+        self.assertEqual(pacman_qo.returncode, 0, pacman_qo.stderr)
+        self.assertIn('is owned by cjson-demo 1.7.18-1', pacman_qo.stdout)
 
-    def test_profile_assets_preflight(self):
-        self.run_axon('configure', '--profile', 'desktop', '--source', self.base, success=False)
-        self.assertFalse((self.root / 'etc/passwd').exists())
-        subprocess.run(['bash', '-n', str(runtime.PROFILE / 'configure.sh')], check=True)
-        subprocess.run(['bash', '-n', str(runtime.PROFILE / 'configure-accounts.sh')], check=True)
+        # Remove via Axon
+        self.run_axon('rm', '--noconfirm', 'cjson-demo')
+        self.assertFalse(target_file.exists())
 
-    def test_target_symlinks_do_not_resolve_into_host(self):
-        (self.root / 'usr').symlink_to('/target-usr')
-        self.assertEqual(runtime.target_path(self.root, '/usr/bin/tool'), self.root / 'target-usr/bin/tool')
+        # Pacman -Q should now report package not found
+        pacman_q_after = subprocess.run(['pacman', '--root', str(self.root), '-Q', 'cjson-demo'],
+                                        capture_output=True, text=True)
+        self.assertNotEqual(pacman_q_after.returncode, 0)
 
 
 if __name__ == '__main__':

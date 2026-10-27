@@ -5,6 +5,8 @@
 #include "axon/config.h"
 #include "axon/color.h"
 #include "axon/lifecycle.h"
+#include "axon/database.h"
+#include "runtime/runtime.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,7 +30,6 @@ static void print_banner(bool color) {
 
 static void print_usage(const char *prog, bool color) {
     (void)prog;
-    printf("Rootfs commands: rootfs, configure, cache, image, map (use <command> --help)\n\n");
     printf("State options (before or after operation):\n"
            "    --root <path>       existing target root; isolate package state there\n"
            "    --db-path <path>    explicit local package database\n"
@@ -197,6 +198,9 @@ int main(int argc, char **argv) {
     int sub_argc = argc - cmd_idx;
     char **sub_argv = &argv[cmd_idx];
 
+    /* Automatically migrate unmigrated packages from legacy /var/lib/axon if writable */
+    axon_db_migrate_legacy(&cfg);
+
     int exit_code = 0;
 
     if (strcmp(cmd, "look") == 0 || strcmp(cmd, "search") == 0) {
@@ -211,11 +215,15 @@ int main(int argc, char **argv) {
         exit_code = cmd_upgrade(sub_argc, sub_argv, &cfg);
     } else if (strcmp(cmd, "replay-post-install") == 0) {
         exit_code = axon_replay_post_install(sub_argc, sub_argv, &cfg);
-    } else if (strcmp(cmd, "rootfs") == 0 || strcmp(cmd, "configure") == 0 ||
-               strcmp(cmd, "cache") == 0 || strcmp(cmd, "image") == 0 || strcmp(cmd, "map") == 0) {
-        exit_code = axon_runtime_command(sub_argc, sub_argv, &cfg) == 0 ? 0 : 1;
+    } else if (strcmp(cmd, "cache") == 0) {
+        exit_code = axon_regenerate_caches(&cfg) == 0 ? 0 : 1;
     } else if (strcmp(cmd, "info") == 0) {
         exit_code = cmd_info(sub_argc, sub_argv, &cfg);
+    } else if (strcmp(cmd, "migrate-db") == 0) {
+        exit_code = axon_db_migrate_legacy(&cfg);
+        if (exit_code == 0) {
+            printf("==> Database check and migration completed.\n");
+        }
     } else {
         if (cfg.color) {
             fprintf(stderr, "%serror:%s unrecognized operation '%s'\n", ANSI_BOLD_RED, ANSI_RESET, cmd);

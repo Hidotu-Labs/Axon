@@ -1,6 +1,7 @@
 #include "axon/lifecycle.h"
 #include "axon/repository.h"
 #include "axon/database.h"
+#include "runtime/runtime.h"
 #include <archive.h>
 #include <archive_entry.h>
 #include <stdio.h>
@@ -12,60 +13,6 @@
 #include <errno.h>
 #include <limits.h>
 
-#ifndef AXON_LIBEXECDIR
-#define AXON_LIBEXECDIR "/usr/local/libexec/axon"
-#endif
-
-static int wait_child(pid_t pid) {
-    int status;
-    if (pid < 0) return -1;
-    while (waitpid(pid, &status, 0) < 0) if (errno != EINTR) return -1;
-    return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
-}
-
-static const char *runtime_path(char *path, size_t size) {
-    /* A source checkout keeps libexec beside its binary. */
-    ssize_t n = readlink("/proc/self/exe", path, size - 1);
-    if (n > 0) {
-        path[n] = '\0';
-        char *slash = strrchr(path, '/');
-        if (slash) {
-            *slash = '\0';
-            size_t used = strlen(path);
-            snprintf(path + used, size - used, "/libexec/axon-runtime.py");
-            if (access(path, R_OK) == 0) return path;
-            snprintf(path + used, size - used, "/../libexec/axon/axon-runtime.py");
-            if (access(path, R_OK) == 0) return path;
-        }
-    }
-    snprintf(path, size, "%s/axon-runtime.py", AXON_LIBEXECDIR);
-    return access(path, R_OK) == 0 ? path : NULL;
-}
-
-int axon_runtime_command(int argc, char **argv, const axon_config_t *cfg) {
-    char helper[PATH_MAX], executable[PATH_MAX];
-    if (!runtime_path(helper, sizeof(helper))) {
-        fprintf(stderr, "error: Axon runtime helper not installed\n"); return -1;
-    }
-    ssize_t n = readlink("/proc/self/exe", executable, sizeof(executable) - 1);
-    if (n < 0) return -1;
-    executable[n] = '\0';
-    char **args = calloc((size_t)argc + 13, sizeof(char *));
-    if (!args) return -1;
-    size_t k = 0;
-    args[k++] = "python3"; args[k++] = helper;
-    for (int i = 0; i < argc; i++) args[k++] = argv[i];
-    args[k++] = "--root"; args[k++] = cfg->root_dir;
-    args[k++] = "--db-path"; args[k++] = cfg->db_path;
-    args[k++] = "--axon-executable"; args[k++] = executable;
-    args[k++] = "--cache-dir"; args[k++] = cfg->cache_path;
-    args[k++] = "--sync-dir"; args[k++] = cfg->sync_path;
-    pid_t pid = fork();
-    if (pid == 0) { execvp(args[0], args); perror("python3"); _exit(127); }
-    free(args);
-    return wait_child(pid);
-}
-
 int axon_scriptlet(const axon_config_t *cfg, const char *archive_path,
                    const axon_package_t *pkg, const char *phase) {
     struct archive *a = archive_read_new();
@@ -74,7 +21,8 @@ int axon_scriptlet(const axon_config_t *cfg, const char *archive_path,
     if (archive_read_open_filename(a, archive_path, 65536) != ARCHIVE_OK) {
         archive_read_free(a); return -1;
     }
-    FILE *script = NULL;
+    char *script_data = NULL;
+    size_t script_len = 0;
     struct archive_entry *entry;
     int result;
     while ((result = archive_read_next_header(a, &entry)) == ARCHIVE_OK) {
@@ -82,27 +30,38 @@ int axon_scriptlet(const axon_config_t *cfg, const char *archive_path,
         while (!strncmp(name, "./", 2)) name += 2;
         if (strcmp(name, ".INSTALL")) { archive_read_data_skip(a); continue; }
         if (archive_entry_filetype(entry) != AE_IFREG) { archive_read_free(a); return -1; }
-        script = tmpfile();
-        if (!script) { archive_read_free(a); return -1; }
-        char data[8192]; la_ssize_t size;
-        while ((size = archive_read_data(a, data, sizeof(data))) > 0)
-            if (fwrite(data, 1, (size_t)size, script) != (size_t)size) { fclose(script); archive_read_free(a); return -1; }
-        if (size < 0) { fclose(script); archive_read_free(a); return -1; }
+
+        size_t cap = 16384;
+        script_data = malloc(cap);
+        if (!script_data) { archive_read_free(a); return -1; }
+
+        la_ssize_t sz;
+        char chunk[4096];
+        while ((sz = archive_read_data(a, chunk, sizeof(chunk))) > 0) {
+            if (script_len + (size_t)sz + 128 >= cap) {
+                cap *= 2;
+                char *nb = realloc(script_data, cap);
+                if (!nb) { free(script_data); archive_read_free(a); return -1; }
+                script_data = nb;
+            }
+            memcpy(script_data + script_len, chunk, sz);
+            script_len += (size_t)sz;
+        }
+        if (sz < 0) { free(script_data); archive_read_free(a); return -1; }
         break;
     }
     archive_read_free(a);
-    if (!script) return result == ARCHIVE_EOF ? 0 : -1;
-    /* Function names and versions are arguments, never interpolated shell code. */
-    fputs("\nif declare -F -- \"$1\" >/dev/null; then \"$@\"; fi\n", script);
-    if (fflush(script) != 0) { fclose(script); return -1; }
-    rewind(script);
-    pid_t pid = fork();
-    if (pid == 0) {
-        if (dup2(fileno(script), STDIN_FILENO) < 0) _exit(127);
-        char *args[] = {"scriptlet", "--phase", (char *)phase, "--version", pkg->version};
-        _exit(axon_runtime_command(5, args, cfg) == 0 ? 0 : 1);
-    }
-    int rc = wait_child(pid); fclose(script);
+    if (!script_data) return result == ARCHIVE_EOF ? 0 : -1;
+
+    /* Append function runner */
+    const char *runner = "\nif declare -F -- \"$1\" >/dev/null; then \"$@\"; fi\n";
+    memcpy(script_data + script_len, runner, strlen(runner));
+    script_len += strlen(runner);
+    script_data[script_len] = '\0';
+
+    char *const cmd[] = {"/bin/bash", "-s", "--", (char *)phase, (char *)(pkg->version ? pkg->version : "1.0"), NULL};
+    int rc = axon_in_target(cfg->root_dir, cmd, script_data, script_len);
+    free(script_data);
     if (rc) fprintf(stderr, "error: %s failed for %s (target bash/chroot must work)\n", phase, pkg->name);
     return rc;
 }
@@ -110,8 +69,7 @@ int axon_scriptlet(const axon_config_t *cfg, const char *archive_path,
 int axon_hooks(const axon_config_t *cfg, const axon_pkg_list_t *packages,
                char **archives, const char *phase, char **manifest_path) {
     if (*manifest_path) {
-        char *args[] = {"hooks", "--phase", (char *)phase, "--manifest", *manifest_path};
-        return axon_runtime_command(5, args, cfg);
+        return axon_run_hooks(cfg, *manifest_path, phase);
     }
     char path[] = "/tmp/axon-transaction-XXXXXX";
     int fd = mkstemp(path);
@@ -145,8 +103,7 @@ int axon_hooks(const axon_config_t *cfg, const axon_pkg_list_t *packages,
     }
     if (fclose(manifest) != 0) rc = -1;
     if (!rc) {
-        char *args[] = {"hooks", "--phase", (char *)phase, "--manifest", path};
-        rc = axon_runtime_command(5, args, cfg);
+        rc = axon_run_hooks(cfg, path, phase);
     }
     if (rc == 0) {
         *manifest_path = strdup(path);
@@ -171,8 +128,21 @@ int axon_replay_post_install(int argc, char **argv, const axon_config_t *cfg) {
     for (int i = 1; i < argc && !rc; i++) {
         axon_package_t *installed = axon_db_get_installed(cfg, argv[i]);
         axon_package_t *remote = axon_repo_find(&mgr, argv[i]);
-        if (!installed || !remote || !installed->version || !remote->version ||
-            strcmp(installed->version, remote->version) || !remote->filename || strchr(remote->filename, '/')) rc = -1;
+        bool ver_match = (installed && remote && installed->version && remote->version &&
+                          strcmp(installed->version, remote->version) == 0);
+        if (!ver_match && installed && remote && installed->version && remote->version) {
+            char clean_inst[256], clean_rem[256];
+            snprintf(clean_inst, sizeof(clean_inst), "%s", installed->version);
+            snprintf(clean_rem, sizeof(clean_rem), "%s", remote->version);
+            char *hi = strrchr(clean_inst, '-');
+            if (hi && strcmp(hi, "-1") == 0 && !strchr(clean_rem, '-')) *hi = '\0';
+            char *hr = strrchr(clean_rem, '-');
+            if (hr && strcmp(hr, "-1") == 0 && !strchr(clean_inst, '-')) *hr = '\0';
+            if (strcmp(clean_inst, clean_rem) == 0 || axon_version_cmp(installed->version, remote->version) == 0) {
+                ver_match = true;
+            }
+        }
+        if (!installed || !remote || !ver_match || !remote->filename || strchr(remote->filename, '/')) rc = -1;
         if (!rc) {
             size_t size = strlen(cfg->cache_path) + strlen(remote->filename) + 2;
             archives[i - 1] = malloc(size);

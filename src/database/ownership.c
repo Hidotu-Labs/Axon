@@ -48,24 +48,35 @@ int axon_db_check_ownership(const axon_config_t *cfg, const char *filepath, char
     /* Strip leading slash for relative matching */
     const char *rel_path = (*filepath == '/') ? filepath + 1 : filepath;
 
-    /* 1. Check Axon local database */
+    /* 1. Check primary local database (cfg->db_path/local) */
+    char primary_local[512] = {0};
     if (cfg && cfg->db_path) {
-        char axon_local[512];
-        snprintf(axon_local, sizeof(axon_local), "%s/local", cfg->db_path);
-        *owner_pkg = find_owner_in_dir(axon_local, rel_path);
+        snprintf(primary_local, sizeof(primary_local), "%s/local", cfg->db_path);
+        *owner_pkg = find_owner_in_dir(primary_local, rel_path);
         if (*owner_pkg) return 0;
     }
 
-    /* 2. Check Pacman local database */
-    char pacman_local[512];
+    /* 2. Check secondary/fallback database */
+    char secondary_local[512];
     if (cfg && cfg->root_dir && strcmp(cfg->root_dir, "/") != 0) {
-        snprintf(pacman_local, sizeof(pacman_local), "%s/var/lib/pacman/local", cfg->root_dir);
+        snprintf(secondary_local, sizeof(secondary_local), "%s/var/lib/pacman/local", cfg->root_dir);
     } else {
-        snprintf(pacman_local, sizeof(pacman_local), "/var/lib/pacman/local");
+        snprintf(secondary_local, sizeof(secondary_local), "/var/lib/pacman/local");
     }
 
-    *owner_pkg = find_owner_in_dir(pacman_local, rel_path);
-    if (*owner_pkg) return 0;
+    /* If primary already was pacman local, fall back to legacy axon directory */
+    if (strcmp(primary_local, secondary_local) == 0) {
+        if (cfg && cfg->root_dir && strcmp(cfg->root_dir, "/") != 0) {
+            snprintf(secondary_local, sizeof(secondary_local), "%s/var/lib/axon/local", cfg->root_dir);
+        } else {
+            snprintf(secondary_local, sizeof(secondary_local), "/var/lib/axon/local");
+        }
+    }
+
+    if (strcmp(primary_local, secondary_local) != 0) {
+        *owner_pkg = find_owner_in_dir(secondary_local, rel_path);
+        if (*owner_pkg) return 0;
+    }
 
     return -1;
 }

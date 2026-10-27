@@ -7,8 +7,6 @@ CFLAGS += $(PKG_CFLAGS)
 
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
-LIBEXECDIR ?= $(PREFIX)/libexec/axon
-CFLAGS += -DAXON_LIBEXECDIR=\"$(LIBEXECDIR)\"
 
 SRCS = \
 	src/main.c \
@@ -34,7 +32,10 @@ SRCS = \
 	src/transaction/lifecycle.c \
 	src/transaction/rollback.c \
 	src/security/signature.c \
-	src/security/verify.c
+	src/security/verify.c \
+	src/runtime/target.c \
+	src/runtime/cache.c \
+	src/runtime/hooks.c
 
 OBJS = $(SRCS:.c=.o)
 -include $(OBJS:.o=.d)
@@ -85,13 +86,9 @@ test: $(TEST_BINS) test-bootstrap test-system
 install: $(TARGET)
 	install -d $(DESTDIR)$(BINDIR)
 	install -m 755 $(TARGET) $(DESTDIR)$(BINDIR)/$(TARGET)
-	install -d $(DESTDIR)$(LIBEXECDIR)/profiles/avory
-	install -m 644 libexec/axon-runtime.py $(DESTDIR)$(LIBEXECDIR)/axon-runtime.py
-	install -m 644 libexec/profiles/avory/* $(DESTDIR)$(LIBEXECDIR)/profiles/avory/
 
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/$(TARGET)
-	rm -rf $(DESTDIR)$(LIBEXECDIR)
 
 clean:
 	rm -f $(OBJS) $(TARGET) $(TEST_BINS) tests/*.o $(OBJS:.o=.d) tests/*.d

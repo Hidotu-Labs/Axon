@@ -57,9 +57,9 @@ with tempfile.TemporaryDirectory(prefix="axon-bootstrap-") as directory:
     run("--root", target, "get", "--needed", "--noconfirm", "--keep-cache",
         "--assume-installed", "ntsync-autoload", "bootstrap-app")
     assert (target / "usr/share/bootstrap-fixture").read_bytes() == payload
-    assert (target / "var/lib/axon/local/bootstrap-app-1.0/desc").is_file()
+    assert (target / "var/lib/pacman/local/bootstrap-app-1.0-1/desc").is_file()
     assert (target / "var/cache/axon/pkg/bootstrap-app.tar").is_file()
-    assert not (target / "var/lib/axon/local/ntsync-autoload-1.0").exists()
+    assert not (target / "var/lib/pacman/local/ntsync-autoload-1.0-1").exists()
 
     # Explicit directories override root defaults in either argument order.
     other = base / "other-root"
@@ -69,9 +69,9 @@ with tempfile.TemporaryDirectory(prefix="axon-bootstrap-") as directory:
         "--sync-dir", sync, "--cache-dir", cache, "--no-color", "--noconfirm",
         "--keep-cache", "--assume-installed", "ntsync-autoload",
         "--assume-installed", "unused-exception", "bootstrap-app")
-    assert (explicit_db / "local/bootstrap-app-1.0/desc").is_file()
+    assert (explicit_db / "local/bootstrap-app-1.0-1/desc").is_file()
     assert (other / "usr/share/bootstrap-fixture").read_bytes() == payload
-    assert not (other / "var/lib/axon").exists()
+    assert not (other / "var/lib/pacman").exists()
 
     # Re-running must not need the repository or archive once installed.
     (sync / "fixture.txt").unlink()
