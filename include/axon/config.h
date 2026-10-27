@@ -24,6 +24,7 @@ typedef struct {
     char *mirrorlist_path;
     bool color;
     bool verbose;
+    int parallel_downloads;
     const char **assume_installed; /* Borrowed bare dependency names, command lifetime. */
     size_t assume_installed_count;
     axon_repo_entry_t *repos;

@@ -1,4 +1,5 @@
 """Offline regression tests for native lifecycle and rootfs operations."""
+import http.server
 import importlib.util
 import io
 import os
@@ -8,6 +9,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import threading
 import unittest
 
 REPO = Path(__file__).resolve().parents[1]
@@ -182,6 +184,65 @@ post_install() { printf 'post:%s\\n' "$1" >> /events; }
         pacman_q_after = subprocess.run(['pacman', '--root', str(self.root), '-Q', 'cjson-demo'],
                                         capture_output=True, text=True)
         self.assertNotEqual(pacman_q_after.returncode, 0)
+
+    def test_parallel_downloads(self):
+        server_dir = self.base / 'http_server'
+        server_dir.mkdir()
+
+        for name, content in [('multi-a', 'data-a'), ('multi-b', 'data-b'), ('multi-c', 'data-c')]:
+            archive = server_dir / f'{name}.tar'
+            with tarfile.open(archive, 'w') as tar:
+                payload = content.encode()
+                entry = tarfile.TarInfo(f'usr/share/{name}')
+                entry.size = len(payload)
+                entry.mode = 0o644
+                tar.addfile(entry, io.BytesIO(payload))
+
+        class QuietHandler(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, directory=str(server_dir), **kwargs)
+            def log_message(self, format, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), QuietHandler)
+        port = server.server_address[1]
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        try:
+            for name in ['multi-a', 'multi-b', 'multi-c']:
+                archive = server_dir / f'{name}.tar'
+                with self.manifest.open('a') as stream:
+                    stream.write(f'{name}|1.0|{archive.stat().st_size}|http://127.0.0.1:{port}/{archive.name}|fixture|\n')
+
+            res = self.run_axon('get', '--noconfirm', '--parallel', '3', 'multi-a', 'multi-b', 'multi-c')
+            self.assertIn('Retrieving 3 packages (3 concurrent downloads)...', res.stdout)
+            self.assertEqual((self.root / 'usr/share/multi-a').read_text(), 'data-a')
+            self.assertEqual((self.root / 'usr/share/multi-b').read_text(), 'data-b')
+            self.assertEqual((self.root / 'usr/share/multi-c').read_text(), 'data-c')
+            self.assertTrue((self.root / 'var/lib/pacman/local/multi-a-1.0-1/desc').is_file())
+            self.assertTrue((self.root / 'var/lib/pacman/local/multi-b-1.0-1/desc').is_file())
+            self.assertTrue((self.root / 'var/lib/pacman/local/multi-c-1.0-1/desc').is_file())
+
+            # Test ParallelDownloads loaded from axon.conf
+            self.conf.write_text('[options]\nParallelDownloads = 2\n[fixture]\nServer = file:///unused\n')
+            for name, content in [('multi-d', 'data-d'), ('multi-e', 'data-e')]:
+                archive = server_dir / f'{name}.tar'
+                with tarfile.open(archive, 'w') as tar:
+                    payload = content.encode()
+                    entry = tarfile.TarInfo(f'usr/share/{name}')
+                    entry.size = len(payload)
+                    entry.mode = 0o644
+                    tar.addfile(entry, io.BytesIO(payload))
+                with self.manifest.open('a') as stream:
+                    stream.write(f'{name}|1.0|{archive.stat().st_size}|http://127.0.0.1:{port}/{archive.name}|fixture|\n')
+
+            res2 = self.run_axon('get', '--noconfirm', 'multi-d', 'multi-e')
+            self.assertIn('Retrieving 2 packages (2 concurrent downloads)...', res2.stdout)
+            self.assertEqual((self.root / 'usr/share/multi-d').read_text(), 'data-d')
+            self.assertEqual((self.root / 'usr/share/multi-e').read_text(), 'data-e')
+        finally:
+            server.shutdown()
+            server.server_close()
 
 
 if __name__ == '__main__':

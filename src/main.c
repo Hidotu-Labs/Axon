@@ -59,7 +59,8 @@ static void print_usage(const char *prog, bool color) {
         printf("    %s-i, --info%s         view package details (with look)\n", ANSI_BOLD_CYAN, ANSI_RESET);
         printf("    %s--color%s            force colored output\n", ANSI_BOLD_CYAN, ANSI_RESET);
         printf("    %s--no-color%s         disable colored output\n", ANSI_BOLD_CYAN, ANSI_RESET);
-        printf("    %s--sync-dir <path>%s  specify repository sync database directory\n\n", ANSI_BOLD_CYAN, ANSI_RESET);
+        printf("    %s--sync-dir <path>%s  specify repository sync database directory\n", ANSI_BOLD_CYAN, ANSI_RESET);
+        printf("    %s--parallel <num>%s   set maximum concurrent downloads (default: 5)\n\n", ANSI_BOLD_CYAN, ANSI_RESET);
         printf("use '%saxon%s %s<operation>%s {%s-h --help%s}' for available options of a specific operation\n",
                ANSI_BOLD_CYAN, ANSI_RESET, ANSI_BOLD, ANSI_RESET, ANSI_BOLD_GREEN, ANSI_RESET);
     } else {
@@ -77,7 +78,8 @@ static void print_usage(const char *prog, bool color) {
         printf("    -i, --info         view package details (with look)\n");
         printf("    --color            force colored output\n");
         printf("    --no-color         disable colored output\n");
-        printf("    --sync-dir <path>  specify repository sync database directory\n\n");
+        printf("    --sync-dir <path>  specify repository sync database directory\n");
+        printf("    --parallel <num>   set maximum concurrent downloads (default: 5)\n\n");
         printf("use 'axon <operation> {-h --help}' for available options of a specific operation\n");
     }
 }
@@ -171,6 +173,9 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--sync-dir") == 0 && i + 1 < argc) {
             free(cfg.sync_path);
             cfg.sync_path = strdup(argv[++i]);
+        } else if ((strcmp(argv[i], "--parallel") == 0 || strcmp(argv[i], "-j") == 0) && i + 1 < argc) {
+            int p = atoi(argv[++i]);
+            cfg.parallel_downloads = (p > 0) ? p : 1;
         } else if (argv[i][0] != '-') {
             cmd_idx = i;
             break;

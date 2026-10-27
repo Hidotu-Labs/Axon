@@ -44,13 +44,35 @@ axon_package_t *axon_arch_find_pkg(const axon_config_t *cfg, const char *pkgname
 int axon_mirrorlist_load(const char *path, char ***mirrors, size_t *count);
 void axon_mirrorlist_free(char **mirrors, size_t count);
 
+#include <stdint.h>
+#include <stdio.h>
+
 /* File utilities */
 int axon_mkdir_p(const char *path, mode_t mode);
 
 /* Downloader */
+typedef struct {
+    const char *display_name;
+    const char *dest_path;
+    char **urls;
+    size_t url_count;
+    size_t expected_size;
+    int status; /* 0 = ok, -1 = error, 1 = pending, 2 = active */
+
+    /* Internal execution state */
+    size_t current_url_idx;
+    char part_path[2048];
+    FILE *fp;
+    void *easy;
+    int64_t dlnow;
+    int64_t dltotal;
+} axon_download_task_t;
+
 int axon_download_file(const char *url, const char *dest_path, const char *display_name, bool show_progress, bool color);
+int axon_download_parallel(axon_download_task_t *tasks, size_t task_count, int max_concurrent, bool color);
 int axon_repo_sync_all(axon_repo_mgr_t *mgr);
 int axon_repo_download_pkg(axon_repo_mgr_t *mgr, const axon_package_t *pkg, const char *dest_dir, char **out_filepath);
+int axon_repo_download_pkgs(axon_repo_mgr_t *mgr, axon_package_t **pkgs, size_t count, const char *dest_dir, char **out_filepaths);
 
 #ifdef __cplusplus
 }

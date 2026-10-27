@@ -373,6 +373,48 @@ static char *format_repo_url(const char *template_url, const char *repo_name, co
     return strdup(buffer);
 }
 
+static char *axon_format_mirror_pkg_url(const char *mirror, const char *repo_name, const char *pkg_arch, const char *filename) {
+    if (!mirror || !repo_name || !pkg_arch || !filename) return NULL;
+    char base_url[1024];
+    base_url[0] = '\0';
+    const char *src = mirror;
+    char *dst = base_url;
+    size_t rem = sizeof(base_url) - 1;
+
+    while (*src && rem > 0) {
+        if (strncmp(src, "$repo", 5) == 0) {
+            size_t rlen = strlen(repo_name);
+            if (rlen >= rem) break;
+            memcpy(dst, repo_name, rlen);
+            dst += rlen;
+            rem -= rlen;
+            src += 5;
+        } else if (strncmp(src, "$arch", 5) == 0) {
+            size_t alen = strlen(pkg_arch);
+            if (alen >= rem) break;
+            memcpy(dst, pkg_arch, alen);
+            dst += alen;
+            rem -= alen;
+            src += 5;
+        } else {
+            *dst++ = *src++;
+            rem--;
+        }
+    }
+    *dst = '\0';
+
+    char *db_pos = strstr(base_url, ".db");
+    if (db_pos) *db_pos = '\0';
+    size_t blen = strlen(base_url);
+    if (blen > 0 && base_url[blen - 1] == '/') {
+        base_url[blen - 1] = '\0';
+    }
+
+    char pkg_url[1536];
+    snprintf(pkg_url, sizeof(pkg_url), "%s/%s", base_url, filename);
+    return strdup(pkg_url);
+}
+
 int axon_repo_sync_all(axon_repo_mgr_t *mgr) {
     if (!mgr || !mgr->cfg) return -1;
     const axon_config_t *cfg = mgr->cfg;
@@ -419,21 +461,31 @@ int axon_repo_sync_all(axon_repo_mgr_t *mgr) {
         arch = un.machine;
     }
 
-    int overall_status = 0;
+    /* Count total sync tasks */
+    size_t custom_count = 0;
+    for (size_t i = 0; i < mgr->count; i++) {
+        if (!mgr->repos[i].is_arch && mgr->repos[i].name && mgr->repos[i].url) {
+            custom_count++;
+        }
+    }
+    static const char *arch_repos[] = {"core", "extra", "multilib", NULL};
+    size_t arch_count = 3;
+    size_t total_tasks = custom_count + arch_count;
 
-    /* 1. Synchronize custom / GitHub repositories */
+    axon_download_task_t *tasks = calloc(total_tasks, sizeof(axon_download_task_t));
+    if (!tasks) {
+        axon_mirrorlist_free(mirrors, mirror_count);
+        return -1;
+    }
+
+    size_t task_idx = 0;
+
+    /* 1. Custom / GitHub repositories */
     for (size_t i = 0; i < mgr->count; i++) {
         if (mgr->repos[i].is_arch) continue;
         const char *repo_name = mgr->repos[i].name;
         const char *repo_url = mgr->repos[i].url;
         if (!repo_name || !repo_url) continue;
-
-        if (color) {
-            printf("%s::%s Synchronizing %s%s%s repository database (GitHub)...\n",
-                   ANSI_BOLD_BLUE, ANSI_RESET, ANSI_BOLD_MAGENTA, repo_name, ANSI_RESET);
-        } else {
-            printf(":: Synchronizing %s repository database (GitHub)...\n", repo_name);
-        }
 
         char dest_file[512];
         snprintf(dest_file, sizeof(dest_file), "%s/%s.txt", sync_dir, repo_name);
@@ -441,34 +493,20 @@ int axon_repo_sync_all(axon_repo_mgr_t *mgr) {
         char display_name[64];
         snprintf(display_name, sizeof(display_name), "%s.txt", repo_name);
 
-        if (cfg->verbose) {
-            printf("   Downloading %s\n", repo_url);
-        }
-
-        int rc = axon_download_file(repo_url, dest_file, display_name, true, color);
-        if (rc != 0) {
-            if (color) {
-                fprintf(stderr, "  %serror:%s failed to download %s%s.txt%s from %s\n",
-                        ANSI_BOLD_RED, ANSI_RESET, ANSI_BOLD_WHITE, repo_name, ANSI_RESET, repo_url);
-            } else {
-                fprintf(stderr, "  error: failed to download %s.txt from %s\n", repo_name, repo_url);
-            }
-            overall_status = -1;
-        }
+        axon_download_task_t *t = &tasks[task_idx++];
+        t->display_name = strdup(display_name);
+        t->dest_path = strdup(dest_file);
+        t->urls = malloc(sizeof(char *));
+        t->urls[0] = strdup(repo_url);
+        t->url_count = 1;
+        t->expected_size = 0;
     }
 
-    /* 2. Synchronize Arch Linux fallback repositories */
-    static const char *arch_repos[] = {"core", "extra", "multilib", NULL};
+    /* 2. Arch Linux fallback repositories */
+    size_t arch_start_idx = task_idx;
     for (size_t r = 0; arch_repos[r]; r++) {
         const char *repo_name = arch_repos[r];
         if (!repo_name) continue;
-
-        if (color) {
-            printf("%s::%s Synchronizing %s%s%s repository database...\n",
-                   ANSI_BOLD_BLUE, ANSI_RESET, ANSI_BOLD_MAGENTA, repo_name, ANSI_RESET);
-        } else {
-            printf(":: Synchronizing %s repository database...\n", repo_name);
-        }
 
         char dest_file[512];
         snprintf(dest_file, sizeof(dest_file), "%s/%s.db", sync_dir, repo_name);
@@ -476,63 +514,92 @@ int axon_repo_sync_all(axon_repo_mgr_t *mgr) {
         char display_name[64];
         snprintf(display_name, sizeof(display_name), "%s.db", repo_name);
 
-        bool success = false;
-        bool local_file_error = false;
-
-        /* Try mirrors in sequence */
+        axon_download_task_t *t = &tasks[task_idx++];
+        t->display_name = strdup(display_name);
+        t->dest_path = strdup(dest_file);
+        t->expected_size = 0;
+        t->urls = malloc(sizeof(char *) * mirror_count);
+        t->url_count = 0;
         for (size_t m = 0; m < mirror_count; m++) {
             char *url = format_repo_url(mirrors[m], repo_name, arch);
-            if (!url) continue;
-
-            if (cfg->verbose) {
-                printf("   Trying %s\n", url);
+            if (url) {
+                t->urls[t->url_count++] = url;
             }
-
-            int rc = axon_download_file(url, dest_file, display_name, true, color);
-            free(url);
-
-            if (rc == 0) {
-                success = true;
-
-                /* Create .db.tar.gz symlink for compatibility */
-                char gz_link[512];
-                snprintf(gz_link, sizeof(gz_link), "%s/%s.db.tar.gz", sync_dir, repo_name);
-                remove(gz_link);
-                symlink(display_name, gz_link);
-
-                break;
-            } else if (rc == -2) {
-                local_file_error = true;
-                break;
-            }
-        }
-
-        if (!success) {
-            if (!local_file_error) {
-                if (color) {
-                    fprintf(stderr, "  %serror:%s failed to download %s%s.db%s from all mirrors\n",
-                            ANSI_BOLD_RED, ANSI_RESET, ANSI_BOLD_WHITE, repo_name, ANSI_RESET);
-                } else {
-                    fprintf(stderr, "  error: failed to download %s.db from all mirrors\n", repo_name);
-                }
-            }
-            overall_status = -1;
         }
     }
 
+    int max_concurrent = cfg->parallel_downloads > 0 ? cfg->parallel_downloads : 5;
+    if (max_concurrent > (int)total_tasks) max_concurrent = (int)total_tasks;
+
+    if (total_tasks == 1) {
+        if (color) {
+            printf("%s::%s Synchronizing repository database...\n", ANSI_BOLD_BLUE, ANSI_RESET);
+        } else {
+            printf(":: Synchronizing repository database...\n");
+        }
+    } else {
+        if (color) {
+            printf("%s::%s Synchronizing %zu repository databases (%s%d%s concurrent downloads)...\n",
+                   ANSI_BOLD_BLUE, ANSI_RESET, total_tasks, ANSI_BOLD_CYAN, max_concurrent, ANSI_RESET);
+        } else {
+            printf(":: Synchronizing %zu repository databases (%d concurrent downloads)...\n",
+                   total_tasks, max_concurrent);
+        }
+    }
+
+    int drc = axon_download_parallel(tasks, total_tasks, max_concurrent, color);
+    int overall_status = (drc == 0) ? 0 : -1;
+
+    /* Create symlinks for Arch repos */
+    for (size_t r = 0; arch_repos[r]; r++) {
+        size_t idx = arch_start_idx + r;
+        if (idx < total_tasks && tasks[idx].status == 0) {
+            char gz_link[512];
+            snprintf(gz_link, sizeof(gz_link), "%s/%s.db.tar.gz", sync_dir, arch_repos[r]);
+            remove(gz_link);
+            symlink(tasks[idx].display_name, gz_link);
+        } else if (idx < total_tasks) {
+            overall_status = -1;
+            if (color) {
+                fprintf(stderr, "  %serror:%s failed to download %s%s.db%s from all mirrors\n",
+                        ANSI_BOLD_RED, ANSI_RESET, ANSI_BOLD_WHITE, arch_repos[r], ANSI_RESET);
+            } else {
+                fprintf(stderr, "  error: failed to download %s.db from all mirrors\n", arch_repos[r]);
+            }
+        }
+    }
+
+    /* Check custom repos status */
+    for (size_t i = 0; i < custom_count; i++) {
+        if (tasks[i].status != 0) {
+            overall_status = -1;
+            if (color) {
+                fprintf(stderr, "  %serror:%s failed to download %s%s%s\n",
+                        ANSI_BOLD_RED, ANSI_RESET, ANSI_BOLD_WHITE, tasks[i].display_name, ANSI_RESET);
+            } else {
+                fprintf(stderr, "  error: failed to download %s\n", tasks[i].display_name);
+            }
+        }
+    }
+
+    for (size_t t = 0; t < total_tasks; t++) {
+        free((char *)tasks[t].display_name);
+        free((char *)tasks[t].dest_path);
+        if (tasks[t].urls) {
+            for (size_t u = 0; u < tasks[t].url_count; u++) {
+                free(tasks[t].urls[u]);
+            }
+            free(tasks[t].urls);
+        }
+    }
+    free(tasks);
     axon_mirrorlist_free(mirrors, mirror_count);
+
     return overall_status;
 }
 
-static bool package_archive_size_matches(const char *path, size_t expected_size) {
-    if (expected_size == 0) return true;
-    struct stat st;
-    return stat(path, &st) == 0 && S_ISREG(st.st_mode) &&
-           (size_t)st.st_size == expected_size;
-}
-
-int axon_repo_download_pkg(axon_repo_mgr_t *mgr, const axon_package_t *pkg, const char *dest_dir, char **out_filepath) {
-    if (!mgr || !mgr->cfg || !pkg || !dest_dir) return -1;
+int axon_repo_download_pkgs(axon_repo_mgr_t *mgr, axon_package_t **pkgs, size_t count, const char *dest_dir, char **out_filepaths) {
+    if (!mgr || !mgr->cfg || !pkgs || count == 0 || !dest_dir || !out_filepaths) return -1;
     const axon_config_t *cfg = mgr->cfg;
     bool color = cfg->color;
 
@@ -559,132 +626,159 @@ int axon_repo_download_pkg(axon_repo_mgr_t *mgr, const axon_package_t *pkg, cons
         repo_arch = un.machine;
     }
 
-    const char *pkg_arch = (pkg->arch && strlen(pkg->arch) > 0) ? pkg->arch : repo_arch;
-
-    char generated_filename[512];
-    const char *filename = pkg->filename;
-    if (!filename || strlen(filename) == 0) {
-        snprintf(generated_filename, sizeof(generated_filename), "%s-%s-%s.pkg.tar.zst",
-                 pkg->name ? pkg->name : "package",
-                 pkg->version ? pkg->version : "1.0",
-                 pkg_arch);
-        filename = generated_filename;
-    }
-
-    char dest_file[1024];
-    snprintf(dest_file, sizeof(dest_file), "%s/%s", dest_dir, filename);
-
-    /* If file already exists and matches expected size (if csize > 0), reuse it */
-    struct stat st;
-    if (stat(dest_file, &st) == 0 && S_ISREG(st.st_mode) && (pkg->csize == 0 || (size_t)st.st_size == pkg->csize)) {
-        if (out_filepath) {
-            *out_filepath = strdup(dest_file);
-        }
-        return 0;
-    }
-
-    /* Direct URL download (Custom / GitHub repositories) */
-    if (!pkg->is_arch && pkg->url && (strncmp(pkg->url, "http://", 7) == 0 || strncmp(pkg->url, "https://", 8) == 0)) {
-        if (cfg->verbose) {
-            printf("   Downloading from direct URL %s\n", pkg->url);
-        }
-        int rc = axon_download_file(pkg->url, dest_file, filename, true, color);
-        if (rc == 0 && package_archive_size_matches(dest_file, pkg->csize)) {
-            if (out_filepath) {
-                *out_filepath = strdup(dest_file);
-            }
-            return 0;
-        }
-        if (rc == 0) {
-            fprintf(stderr, "error: downloaded package %s has an unexpected size\n",
-                    filename);
-            remove(dest_file);
-        }
-        return -1;
-    }
-
-    /* Load mirrorlist */
     char **mirrors = NULL;
     size_t mirror_count = 0;
     axon_mirrorlist_load(cfg->mirrorlist_path, &mirrors, &mirror_count);
 
-    if (mirror_count == 0) {
-        if (color) {
-            fprintf(stderr, "%serror:%s no mirror servers configured or available\n", ANSI_BOLD_RED, ANSI_RESET);
-        } else {
-            fprintf(stderr, "error: no mirror servers configured or available\n");
-        }
+    axon_download_task_t *tasks = calloc(count, sizeof(axon_download_task_t));
+    size_t *task_to_orig = calloc(count, sizeof(size_t));
+    if (!tasks || !task_to_orig) {
+        free(tasks);
+        free(task_to_orig);
+        axon_mirrorlist_free(mirrors, mirror_count);
         return -1;
     }
 
-    const char *repo_name = pkg->repo ? pkg->repo : "extra";
+    size_t need_download = 0;
 
-    bool success = false;
-    for (size_t m = 0; m < mirror_count; m++) {
-        char base_url[1024];
-        base_url[0] = '\0';
-        const char *src = mirrors[m];
-        char *dst = base_url;
-        size_t rem = sizeof(base_url) - 1;
+    for (size_t i = 0; i < count; i++) {
+        axon_package_t *pkg = pkgs[i];
+        if (!pkg || !pkg->name) continue;
 
-        while (*src && rem > 0) {
-            if (strncmp(src, "$repo", 5) == 0) {
-                size_t rlen = strlen(repo_name);
-                if (rlen >= rem) break;
-                memcpy(dst, repo_name, rlen);
-                dst += rlen;
-                rem -= rlen;
-                src += 5;
-            } else if (strncmp(src, "$arch", 5) == 0) {
-                size_t alen = strlen(repo_arch);
-                if (alen >= rem) break;
-                memcpy(dst, repo_arch, alen);
-                dst += alen;
-                rem -= alen;
-                src += 5;
-            } else {
-                *dst++ = *src++;
-                rem--;
+        const char *pkg_arch = (pkg->arch && strlen(pkg->arch) > 0) ? pkg->arch : repo_arch;
+        char gen_name[512];
+        const char *filename = pkg->filename;
+        if (!filename || strlen(filename) == 0) {
+            snprintf(gen_name, sizeof(gen_name), "%s-%s-%s.pkg.tar.zst",
+                     pkg->name ? pkg->name : "package",
+                     pkg->version ? pkg->version : "1.0",
+                     pkg_arch);
+            filename = gen_name;
+        }
+
+        char dest_file[1024];
+        snprintf(dest_file, sizeof(dest_file), "%s/%s", dest_dir, filename);
+
+        /* Check existing cache */
+        struct stat st;
+        if (stat(dest_file, &st) == 0 && S_ISREG(st.st_mode) &&
+            (pkg->csize == 0 || (size_t)st.st_size == pkg->csize)) {
+            out_filepaths[i] = strdup(dest_file);
+            continue;
+        }
+
+        axon_download_task_t *t = &tasks[need_download];
+        task_to_orig[need_download] = i;
+        t->display_name = strdup(filename);
+        t->dest_path = strdup(dest_file);
+        t->expected_size = pkg->csize;
+
+        if (!pkg->is_arch && pkg->url &&
+            (strncmp(pkg->url, "http://", 7) == 0 || strncmp(pkg->url, "https://", 8) == 0)) {
+            t->urls = malloc(sizeof(char *));
+            t->urls[0] = strdup(pkg->url);
+            t->url_count = 1;
+        } else {
+            if (mirror_count == 0) {
+                if (color) {
+                    fprintf(stderr, "%serror:%s no mirror servers configured or available for %s\n",
+                            ANSI_BOLD_RED, ANSI_RESET, pkg->name);
+                } else {
+                    fprintf(stderr, "error: no mirror servers configured or available for %s\n", pkg->name);
+                }
+                for (size_t k = 0; k <= need_download; k++) {
+                    free((char *)tasks[k].display_name);
+                    free((char *)tasks[k].dest_path);
+                    if (tasks[k].urls) {
+                        for (size_t u = 0; u < tasks[k].url_count; u++) free(tasks[k].urls[u]);
+                        free(tasks[k].urls);
+                    }
+                }
+                free(tasks);
+                free(task_to_orig);
+                axon_mirrorlist_free(mirrors, mirror_count);
+                return -1;
+            }
+
+            const char *repo_name = pkg->repo ? pkg->repo : "extra";
+            t->urls = malloc(sizeof(char *) * mirror_count);
+            t->url_count = 0;
+            for (size_t m = 0; m < mirror_count; m++) {
+                char *u = axon_format_mirror_pkg_url(mirrors[m], repo_name, pkg_arch, filename);
+                if (u) {
+                    t->urls[t->url_count++] = u;
+                }
             }
         }
-        *dst = '\0';
 
-        char *db_pos = strstr(base_url, ".db");
-        if (db_pos) *db_pos = '\0';
-        size_t blen = strlen(base_url);
-        if (blen > 0 && base_url[blen - 1] == '/') {
-            base_url[blen - 1] = '\0';
-        }
-
-        char pkg_url[1536];
-        snprintf(pkg_url, sizeof(pkg_url), "%s/%s", base_url, filename);
-
-        if (cfg->verbose) {
-            printf("   Downloading from %s\n", pkg_url);
-        }
-
-        int rc = axon_download_file(pkg_url, dest_file, filename, true, color);
-        if (rc == 0) {
-            if (package_archive_size_matches(dest_file, pkg->csize)) {
-                success = true;
-                break;
-            }
-            fprintf(stderr, "error: downloaded package %s has an unexpected size; trying next mirror\n",
-                    filename);
-            remove(dest_file);
-        } else if (rc == -2) {
-            break;
-        }
+        need_download++;
     }
 
-    axon_mirrorlist_free(mirrors, mirror_count);
-
-    if (success) {
-        if (out_filepath) {
-            *out_filepath = strdup(dest_file);
-        }
+    if (need_download == 0) {
+        free(tasks);
+        free(task_to_orig);
+        axon_mirrorlist_free(mirrors, mirror_count);
         return 0;
     }
 
-    return -1;
+    int max_concurrent = cfg->parallel_downloads > 0 ? cfg->parallel_downloads : 5;
+    if (max_concurrent > (int)need_download) max_concurrent = (int)need_download;
+
+    if (need_download == 1) {
+        size_t orig = task_to_orig[0];
+        if (color) {
+            printf("%s::%s Downloading package archive for %s%s%s...\n",
+                   ANSI_BOLD_BLUE, ANSI_RESET, ANSI_BOLD_WHITE, pkgs[orig]->name, ANSI_RESET);
+        } else {
+            printf(":: Downloading package archive for %s...\n", pkgs[orig]->name);
+        }
+    } else {
+        if (color) {
+            printf("%s::%s Retrieving %zu packages (%s%d%s concurrent downloads)...\n",
+                   ANSI_BOLD_BLUE, ANSI_RESET, need_download, ANSI_BOLD_CYAN, max_concurrent, ANSI_RESET);
+        } else {
+            printf(":: Retrieving %zu packages (%d concurrent downloads)...\n",
+                   need_download, max_concurrent);
+        }
+    }
+
+    int rc = axon_download_parallel(tasks, need_download, max_concurrent, color);
+
+    bool any_failed = false;
+    for (size_t t = 0; t < need_download; t++) {
+        size_t orig = task_to_orig[t];
+        if (tasks[t].status == 0) {
+            out_filepaths[orig] = strdup(tasks[t].dest_path);
+        } else {
+            any_failed = true;
+            if (color) {
+                fprintf(stderr, "%serror:%s failed to download package archive for %s\n",
+                        ANSI_BOLD_RED, ANSI_RESET, pkgs[orig]->name);
+            } else {
+                fprintf(stderr, "error: failed to download package archive for %s\n", pkgs[orig]->name);
+            }
+        }
+    }
+
+    for (size_t t = 0; t < need_download; t++) {
+        free((char *)tasks[t].display_name);
+        free((char *)tasks[t].dest_path);
+        if (tasks[t].urls) {
+            for (size_t u = 0; u < tasks[t].url_count; u++) {
+                free(tasks[t].urls[u]);
+            }
+            free(tasks[t].urls);
+        }
+    }
+    free(tasks);
+    free(task_to_orig);
+    axon_mirrorlist_free(mirrors, mirror_count);
+
+    return (rc == 0 && !any_failed) ? 0 : -1;
+}
+
+int axon_repo_download_pkg(axon_repo_mgr_t *mgr, const axon_package_t *pkg, const char *dest_dir, char **out_filepath) {
+    if (!pkg) return -1;
+    axon_package_t *p = (axon_package_t *)pkg;
+    return axon_repo_download_pkgs(mgr, &p, 1, dest_dir, out_filepath);
 }

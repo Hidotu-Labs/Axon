@@ -36,17 +36,19 @@ int cmd_get(int argc, char **argv, const axon_config_t *cfg) {
                 printf("    %s--overwrite%s         overwrite conflicting non-critical files\n", ANSI_BOLD_CYAN, ANSI_RESET);
                 printf("    %s--keep-cache%s        keep downloaded package archive in cache\n", ANSI_BOLD_CYAN, ANSI_RESET);
                 printf("    %s--cache-dir <path>%s  specify package cache directory\n", ANSI_BOLD_CYAN, ANSI_RESET);
+                printf("    %s--parallel <num>%s    set maximum concurrent downloads (default: 5)\n", ANSI_BOLD_CYAN, ANSI_RESET);
                 printf("    %s--root <path>%s       specify alternate installation root\n", ANSI_BOLD_CYAN, ANSI_RESET);
                 printf("    %s-v, --verbose%s       display verbose download output\n", ANSI_BOLD_CYAN, ANSI_RESET);
                 printf("    %s-h, --help%s          display this help message\n", ANSI_BOLD_CYAN, ANSI_RESET);
             } else {
                 printf("usage:  axon get [options] <package...>\n\n");
                 printf("options:\n");
-                printf("    -y, --noconfirm    do not prompt for confirmation\n");
-                printf("    --overwrite        overwrite conflicting non-critical files\n");
-                printf("    --keep-cache       keep downloaded package archive in cache\n");
-                printf("    --cache-dir <path> specify package cache directory\n");
-                printf("    --root <path>      specify alternate installation root\n");
+                printf("    -y, --noconfirm     do not prompt for confirmation\n");
+                printf("    --overwrite         overwrite conflicting non-critical files\n");
+                printf("    --keep-cache        keep downloaded package archive in cache\n");
+                printf("    --cache-dir <path>  specify package cache directory\n");
+                printf("    --parallel <num>    set maximum concurrent downloads (default: 5)\n");
+                printf("    --root <path>       specify alternate installation root\n");
                 printf("    -v, --verbose      display verbose download output\n");
                 printf("    -h, --help         display this help message\n");
             }
@@ -73,6 +75,9 @@ int cmd_get(int argc, char **argv, const axon_config_t *cfg) {
             keep_cache = true;
         } else if (strcmp(argv[i], "--cache-dir") == 0 && i + 1 < argc) {
             local_cfg.cache_path = argv[++i];
+        } else if ((strcmp(argv[i], "--parallel") == 0 || strcmp(argv[i], "-j") == 0) && i + 1 < argc) {
+            int p = atoi(argv[++i]);
+            local_cfg.parallel_downloads = (p > 0) ? p : 1;
         } else if (strcmp(argv[i], "--root") == 0 && i + 1 < argc) {
             local_cfg.root_dir = argv[++i];
         } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
@@ -119,7 +124,9 @@ int cmd_get(int argc, char **argv, const axon_config_t *cfg) {
     for (int i = 1; i < argc; i++) {
         const char *pkgname = argv[i];
         if (pkgname[0] == '-') {
-            if ((strcmp(pkgname, "--cache-dir") == 0 || strcmp(pkgname, "--root") == 0 || strcmp(pkgname, "--assume-installed") == 0) && i + 1 < argc) {
+            if ((strcmp(pkgname, "--cache-dir") == 0 || strcmp(pkgname, "--root") == 0 ||
+                 strcmp(pkgname, "--assume-installed") == 0 || strcmp(pkgname, "--parallel") == 0 ||
+                 strcmp(pkgname, "-j") == 0) && i + 1 < argc) {
                 i++;
             }
             continue;
@@ -274,32 +281,7 @@ int cmd_get(int argc, char **argv, const axon_config_t *cfg) {
     }
 
     /* Phase 1: Download all packages */
-    bool download_failed = false;
-    for (size_t i = 0; i < to_install->count; i++) {
-        axon_package_t *pkg = to_install->packages[i];
-        if (!pkg || !pkg->name) continue;
-
-        if (cfg->color) {
-            printf("%s::%s Downloading package archive for %s%s%s...\n",
-                   ANSI_BOLD_BLUE, ANSI_RESET, ANSI_BOLD_WHITE, pkg->name, ANSI_RESET);
-        } else {
-            printf(":: Downloading package archive for %s...\n", pkg->name);
-        }
-
-        int drc = axon_repo_download_pkg(&mgr, pkg, cache_dir, &downloaded_paths[i]);
-        if (drc != 0 || !downloaded_paths[i]) {
-            if (cfg->color) {
-                fprintf(stderr, "%serror:%s failed to download package archive for %s\n",
-                        ANSI_BOLD_RED, ANSI_RESET, pkg->name);
-            } else {
-                fprintf(stderr, "error: failed to download package archive for %s\n", pkg->name);
-            }
-            download_failed = true;
-            break;
-        }
-    }
-
-    if (download_failed) {
+    if (axon_repo_download_pkgs(&mgr, to_install->packages, to_install->count, cache_dir, downloaded_paths) != 0) {
         if (!keep_cache) {
             for (size_t i = 0; i < to_install->count; i++) {
                 if (downloaded_paths[i]) unlink(downloaded_paths[i]);

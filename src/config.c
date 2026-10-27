@@ -82,6 +82,9 @@ int axon_config_init(axon_config_t *cfg) {
     cfg->color = isatty(STDOUT_FILENO);
     cfg->verbose = false;
 
+    const char *env_parallel = getenv("AXON_PARALLEL_DOWNLOADS");
+    cfg->parallel_downloads = (env_parallel && atoi(env_parallel) > 0) ? atoi(env_parallel) : 5;
+
     /* Auto-load configuration file */
     const char *env_conf = getenv("AXON_CONF");
     if (env_conf && access(env_conf, R_OK) == 0) {
@@ -165,6 +168,9 @@ int axon_config_load(axon_config_t *cfg, const char *path) {
                 cfg->mirrorlist_path = strdup(val);
             } else if (strcmp(key, "Color") == 0) {
                 cfg->color = (strcmp(val, "1") == 0 || strcasecmp(val, "true") == 0 || strcasecmp(val, "auto") == 0);
+            } else if (strcmp(key, "ParallelDownloads") == 0) {
+                int pd = atoi(val);
+                cfg->parallel_downloads = (pd > 0) ? pd : 1;
             } else if (strcmp(key, "Repo") == 0) {
                 char rname[128], rurl[256];
                 if (sscanf(val, "%127s %255s", rname, rurl) == 2) {
